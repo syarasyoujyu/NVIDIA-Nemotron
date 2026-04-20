@@ -154,23 +154,32 @@ class PatternValidator:
             reason="no_assumed_family_matched_all_examples_and_answer",
         )
 
+    def _extra_unmatched_fields(self, row: dict[str, str]) -> dict[str, str]:
+        """サブクラスでオーバーライドして unmatched.csv に列を追加する"""
+        return {}
+
     def write_outputs(self, output_root: Path, rows: list[dict[str, str]]) -> dict[str, str]:
         pattern_dir = output_root / self.pattern_name
         pattern_dir.mkdir(parents=True, exist_ok=True)
 
         unmatched_rows = []
         matched_count = 0
+        extra_fieldnames: list[str] = []
         for row in rows:
             result = self.validate_row(row)
             if result.matched:
                 matched_count += 1
                 continue
+            extra = self._extra_unmatched_fields(row)
+            if not extra_fieldnames and extra:
+                extra_fieldnames = list(extra.keys())
             unmatched_rows.append(
                 {
                     "id": row["id"],
                     "pattern": self.pattern_name,
                     "reason": result.reason,
                     "families_checked": "|".join(self.family_names()),
+                    **extra,
                     "prompt": row["prompt"],
                     "answer": row["answer"],
                 }
@@ -185,6 +194,7 @@ class PatternValidator:
                     "pattern",
                     "reason",
                     "families_checked",
+                    *extra_fieldnames,
                     "prompt",
                     "answer",
                 ],
