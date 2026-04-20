@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Callable
@@ -14,6 +15,46 @@ Rule = tuple[str, str, Callable[[str], bool]]
 
 def first_line(text: str) -> str:
     return text.splitlines()[0].strip()
+
+
+def _extract_examples_and_target(prompt: str) -> tuple[list[str], str | None]:
+    """例題の左辺リストとターゲット入力を返す"""
+    examples_lhs: list[str] = []
+    target: str | None = None
+    for line in prompt.splitlines():
+        line = line.strip()
+        if " = " in line and not any(
+            kw in line for kw in ["Wonderland", "determine", "examples", "rules", "result", "few", "applied", "set of", "secret"]
+        ):
+            examples_lhs.append(line.split(" = ", 1)[0].strip())
+        elif line.startswith("Now, determine the result for: "):
+            target = line.split(": ", 1)[1].strip()
+    return examples_lhs, target
+
+
+def _get_operator(expr: str) -> str | None:
+    m = re.match(r"^\d+([^\d]+)\d+$", expr.strip())
+    return m.group(1) if m else None
+
+
+def classify_deduce_guess(prompt: str, pattern: str) -> str:
+    """deduce: ターゲットのルールが例題から推論可能 / guess: 不明な記号あり"""
+    examples_lhs, target = _extract_examples_and_target(prompt)
+    if not target or not examples_lhs:
+        return "deduce"
+
+    if pattern == "symbol_equation":
+        example_chars = set("".join(examples_lhs))
+        return "deduce" if all(c in example_chars for c in target) else "guess"
+
+    if pattern == "numeric_equation":
+        target_op = _get_operator(target)
+        if not target_op:
+            return "deduce"
+        example_ops = {op for lhs in examples_lhs if (op := _get_operator(lhs))}
+        return "deduce" if target_op in example_ops else "guess"
+
+    return "deduce"
 
 
 def _is_equation_with_numbers(prompt: str) -> bool:
@@ -114,6 +155,8 @@ def split_dataset(input_csv: Path, output_dir: Path) -> None:
     output_fieldnames = list(fieldnames) + ["pattern"]
     summary = []
 
+    _DEDUCE_GUESS_PATTERNS = {"numeric_equation", "symbol_equation"}
+
     for label, description, _ in RULES:
         rows = rows_by_pattern.get(label, [])
         pattern_dir = output_dir / label
@@ -132,6 +175,20 @@ def split_dataset(input_csv: Path, output_dir: Path) -> None:
                 "output_file": str(out_path.relative_to(output_dir)),
             }
         )
+
+        if label in _DEDUCE_GUESS_PATTERNS:
+            for subcat in ("deduce", "guess"):
+                subcat_rows = [
+                    r for r in rows
+                    if classify_deduce_guess(r["prompt"], label) == subcat
+                ]
+                subcat_dir = pattern_dir / subcat
+                subcat_dir.mkdir(parents=True, exist_ok=True)
+                subcat_path = subcat_dir / "rows.csv"
+                with subcat_path.open("w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=output_fieldnames)
+                    writer.writeheader()
+                    writer.writerows(subcat_rows)
 
     summary_path = output_dir / "summary.json"
     with summary_path.open("w", encoding="utf-8") as f:

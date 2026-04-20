@@ -13,4 +13,14 @@ class SymbolEquationValidator(PatternValidator):
         return False
 
 
+class SymbolEquationDeduceValidator(SymbolEquationValidator):
+    pattern_name = "symbol_equation/deduce"
+
+
+class SymbolEquationGuessValidator(SymbolEquationValidator):
+    pattern_name = "symbol_equation/guess"
+
+
 VALIDATOR = SymbolEquationValidator()
+DEDUCE_VALIDATOR = SymbolEquationDeduceValidator()
+GUESS_VALIDATOR = SymbolEquationGuessValidator()

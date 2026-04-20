@@ -117,4 +117,14 @@ class SymbolEquationExtractor(PatternExtractor):
         return "\n".join(sections).rstrip() + "\n"
 
 
+class SymbolEquationDeduceExtractor(SymbolEquationExtractor):
+    pattern_name = "symbol_equation/deduce"
+
+
+class SymbolEquationGuessExtractor(SymbolEquationExtractor):
+    pattern_name = "symbol_equation/guess"
+
+
 EXTRACTOR = SymbolEquationExtractor()
+DEDUCE_EXTRACTOR = SymbolEquationDeduceExtractor()
+GUESS_EXTRACTOR = SymbolEquationGuessExtractor()

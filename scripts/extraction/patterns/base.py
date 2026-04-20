@@ -171,7 +171,8 @@ class PatternValidator:
                     "pattern": self.pattern_name,
                     "reason": result.reason,
                     "families_checked": "|".join(self.family_names()),
-                    "prompt_first_line": row["prompt"].splitlines()[0].strip(),
+                    "prompt": row["prompt"],
+                    "answer": row["answer"],
                 }
             )
 
@@ -184,7 +185,8 @@ class PatternValidator:
                     "pattern",
                     "reason",
                     "families_checked",
-                    "prompt_first_line",
+                    "prompt",
+                    "answer",
                 ],
             )
             writer.writeheader()

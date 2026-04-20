@@ -2,11 +2,19 @@ from .bit_manipulation import EXTRACTOR as BIT_EXTRACTOR
 from .bit_manipulation import VALIDATOR as BIT_VALIDATOR
 from .gravity_distance import EXTRACTOR as GRAVITY_EXTRACTOR
 from .gravity_distance import VALIDATOR as GRAVITY_VALIDATOR
+from .numeric_equation import DEDUCE_EXTRACTOR as NUMERIC_EQUATION_DEDUCE_EXTRACTOR
+from .numeric_equation import DEDUCE_VALIDATOR as NUMERIC_EQUATION_DEDUCE_VALIDATOR
 from .numeric_equation import EXTRACTOR as NUMERIC_EQUATION_EXTRACTOR
+from .numeric_equation import GUESS_EXTRACTOR as NUMERIC_EQUATION_GUESS_EXTRACTOR
+from .numeric_equation import GUESS_VALIDATOR as NUMERIC_EQUATION_GUESS_VALIDATOR
 from .numeric_equation import VALIDATOR as NUMERIC_EQUATION_VALIDATOR
 from .roman_numeral import EXTRACTOR as ROMAN_EXTRACTOR
 from .roman_numeral import VALIDATOR as ROMAN_VALIDATOR
+from .symbol_equation import DEDUCE_EXTRACTOR as SYMBOL_EQUATION_DEDUCE_EXTRACTOR
+from .symbol_equation import DEDUCE_VALIDATOR as SYMBOL_EQUATION_DEDUCE_VALIDATOR
 from .symbol_equation import EXTRACTOR as SYMBOL_EQUATION_EXTRACTOR
+from .symbol_equation import GUESS_EXTRACTOR as SYMBOL_EQUATION_GUESS_EXTRACTOR
+from .symbol_equation import GUESS_VALIDATOR as SYMBOL_EQUATION_GUESS_VALIDATOR
 from .symbol_equation import VALIDATOR as SYMBOL_EQUATION_VALIDATOR
 from .text_decryption import EXTRACTOR as TEXT_EXTRACTOR
 from .text_decryption import VALIDATOR as TEXT_VALIDATOR
@@ -22,7 +30,11 @@ def get_extractors():
         UNIT_EXTRACTOR,
         GRAVITY_EXTRACTOR,
         NUMERIC_EQUATION_EXTRACTOR,
+        NUMERIC_EQUATION_DEDUCE_EXTRACTOR,
+        NUMERIC_EQUATION_GUESS_EXTRACTOR,
         SYMBOL_EQUATION_EXTRACTOR,
+        SYMBOL_EQUATION_DEDUCE_EXTRACTOR,
+        SYMBOL_EQUATION_GUESS_EXTRACTOR,
     ]
 
 
@@ -34,5 +46,9 @@ def get_validators():
         UNIT_VALIDATOR,
         GRAVITY_VALIDATOR,
         NUMERIC_EQUATION_VALIDATOR,
+        NUMERIC_EQUATION_DEDUCE_VALIDATOR,
+        NUMERIC_EQUATION_GUESS_VALIDATOR,
         SYMBOL_EQUATION_VALIDATOR,
+        SYMBOL_EQUATION_DEDUCE_VALIDATOR,
+        SYMBOL_EQUATION_GUESS_VALIDATOR,
     ]

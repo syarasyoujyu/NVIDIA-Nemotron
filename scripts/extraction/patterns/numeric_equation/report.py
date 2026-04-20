@@ -117,4 +117,14 @@ class NumericEquationExtractor(PatternExtractor):
         return "\n".join(sections).rstrip() + "\n"
 
 
+class NumericEquationDeduceExtractor(NumericEquationExtractor):
+    pattern_name = "numeric_equation/deduce"
+
+
+class NumericEquationGuessExtractor(NumericEquationExtractor):
+    pattern_name = "numeric_equation/guess"
+
+
 EXTRACTOR = NumericEquationExtractor()
+DEDUCE_EXTRACTOR = NumericEquationDeduceExtractor()
+GUESS_EXTRACTOR = NumericEquationGuessExtractor()

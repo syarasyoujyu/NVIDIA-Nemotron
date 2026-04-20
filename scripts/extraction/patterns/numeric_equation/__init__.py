@@ -1,2 +1,2 @@
-from .report import EXTRACTOR
-from .validator import VALIDATOR
+from .report import DEDUCE_EXTRACTOR, EXTRACTOR, GUESS_EXTRACTOR
+from .validator import DEDUCE_VALIDATOR, VALIDATOR, GUESS_VALIDATOR
