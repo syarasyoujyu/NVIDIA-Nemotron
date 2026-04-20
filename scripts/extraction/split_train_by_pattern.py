@@ -16,6 +16,20 @@ def first_line(text: str) -> str:
     return text.splitlines()[0].strip()
 
 
+def _is_equation_with_numbers(prompt: str) -> bool:
+    import re
+    for line in prompt.splitlines():
+        line = line.strip()
+        if "=" not in line:
+            continue
+        if any(kw in line for kw in ["Wonderland", "determine", "examples", "rules", "result", "few", "applied", "set of", "secret"]):
+            continue
+        lhs = line.split("=", 1)[0]
+        if re.search(r"\d", lhs):
+            return True
+    return False
+
+
 RULES: list[Rule] = [
     (
         "bit_manipulation",
@@ -44,10 +58,18 @@ RULES: list[Rule] = [
         lambda prompt: "gravitational constant has been secretly changed" in prompt,
     ),
     (
-        "equation_transformation",
-        "symbol-string transformation rules",
+        "numeric_equation",
+        "equation transformation with numeric operands",
         lambda prompt: "secret set of transformation rules is applied to equations"
-        in prompt,
+        in prompt
+        and _is_equation_with_numbers(prompt),
+    ),
+    (
+        "symbol_equation",
+        "equation transformation with symbol operands",
+        lambda prompt: "secret set of transformation rules is applied to equations"
+        in prompt
+        and not _is_equation_with_numbers(prompt),
     ),
 ]
 

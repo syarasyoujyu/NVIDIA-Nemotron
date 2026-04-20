@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import difflib
+import json
 from collections import Counter
 
-from ..base import PatternExtractor
+from ..base import PatternExtractor, format_markdown_table
 
 
-class EquationPromptExtractor(PatternExtractor):
-    pattern_name = "equation_transformation"
+class NumericEquationExtractor(PatternExtractor):
+    pattern_name = "numeric_equation"
 
     def parse_prompt(self, prompt: str, answer: str) -> dict:
         examples = []
@@ -65,12 +66,55 @@ class EquationPromptExtractor(PatternExtractor):
             "target_input": target_text,
             "answer": answer,
             "rule_summary": (
-                "記号列の書き換え問題です。関係図では各例題について、"
-                "共通記号、削除された記号、追加された記号、差分操作を要約しています。"
+                "数値を含む数式の変換問題です。関係図では各例題について、"
+                "共通文字、削除された文字、追加された文字、差分操作を要約しています。"
             ),
             "relation_diagram": "\n".join(diagram_lines),
             "analysis": analysis_rows,
         }
 
 
-EXTRACTOR = EquationPromptExtractor()
+    def build_sample_section(self, records: list[dict], sample_size: int) -> str:
+        sections = [f"# {self.pattern_name}", "", f"総件数: {len(records)}", ""]
+
+        for record in records[:sample_size]:
+            sections.append(f"## {record['id']}")
+            sections.append("")
+            sections.append("### 規則の要約")
+            sections.append(record["rule_summary"])
+            sections.append("")
+            sections.append("### 適用した推論規則")
+            sections.append(
+                format_markdown_table(
+                    ["規則名", "説明", "一致"],
+                    [["（未設定）", "—", "—"]],
+                )
+            )
+            sections.append("")
+            sections.append("### 入出力表")
+
+            table_rows = []
+            for idx, pair in enumerate(record["examples"], start=1):
+                table_rows.append([str(idx), pair["input"], pair["output"]])
+            table_rows.append(["target", record["target_input"], record["answer"]])
+
+            sections.append(format_markdown_table(["行", "入力", "出力"], table_rows))
+            sections.append("")
+            sections.append("### 関係図")
+            sections.append("```text")
+            sections.append(record["relation_diagram"])
+            sections.append("```")
+            sections.append("")
+
+            analysis = record.get("analysis")
+            if analysis is not None:
+                sections.append("### 補足情報")
+                sections.append("```json")
+                sections.append(json.dumps(analysis, ensure_ascii=False, indent=2))
+                sections.append("```")
+                sections.append("")
+
+        return "\n".join(sections).rstrip() + "\n"
+
+
+EXTRACTOR = NumericEquationExtractor()
