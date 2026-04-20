@@ -94,7 +94,9 @@ def split_dataset(input_csv: Path, output_dir: Path) -> None:
 
     for label, description, _ in RULES:
         rows = rows_by_pattern.get(label, [])
-        out_path = output_dir / f"{label}.csv"
+        pattern_dir = output_dir / label
+        pattern_dir.mkdir(parents=True, exist_ok=True)
+        out_path = pattern_dir / "rows.csv"
         with out_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=output_fieldnames)
             writer.writeheader()
@@ -105,7 +107,7 @@ def split_dataset(input_csv: Path, output_dir: Path) -> None:
                 "pattern": label,
                 "description": description,
                 "count": len(rows),
-                "output_file": out_path.name,
+                "output_file": str(out_path.relative_to(output_dir)),
             }
         )
 
@@ -146,7 +148,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/pattern_splits"),
+        default=Path("data/patterns"),
         help="Directory where the split CSV files will be written.",
     )
     return parser.parse_args()
