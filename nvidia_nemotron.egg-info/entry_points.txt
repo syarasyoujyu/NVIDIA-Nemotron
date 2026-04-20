@@ -1,3 +1,0 @@
-[console_scripts]
-generate-pattern-rule-reports = scripts.extraction.generate_pattern_rule_reports:main
-split-train-by-pattern = scripts.extraction.split_train_by_pattern:main

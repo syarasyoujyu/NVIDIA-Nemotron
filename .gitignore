@@ -2,3 +2,4 @@
 .codex
 data/*
 **__pycache__*
+*.egg-info*
