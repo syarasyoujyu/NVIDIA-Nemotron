@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from scripts.extraction.extract_pattern import get_extractors
-from scripts.extraction.extract_pattern.base import format_markdown_table, load_rows
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.extraction.patterns import get_extractors, get_validators
+from scripts.extraction.patterns.base import format_markdown_table, load_rows
 
 
 def generate_reports(input_dir: Path, output_dir: Path, sample_size: int) -> None:
@@ -41,9 +46,41 @@ def generate_reports(input_dir: Path, output_dir: Path, sample_size: int) -> Non
     (output_dir / "README.md").write_text("\n".join(index_md), encoding="utf-8")
 
 
+def generate_unmatched(input_dir: Path, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    index_rows = []
+    for validator in get_validators():
+        source_path = input_dir / validator.pattern_name / "rows.csv"
+        rows = load_rows(source_path)
+        index_rows.append(validator.write_outputs(output_dir, rows))
+
+    readme_lines = ["# unmatched 一覧", ""]
+    readme_lines.append(
+        format_markdown_table(
+            ["パターン", "総件数", "一致件数", "未一致件数", "unmatched_csv", "summary_json"],
+            [
+                [
+                    row["pattern"],
+                    row["total_rows"],
+                    row["matched_rows"],
+                    row["unmatched_rows"],
+                    row["unmatched_csv"],
+                    row["summary_json"],
+                ]
+                for row in index_rows
+            ],
+        )
+    )
+    readme_lines.append("")
+    (output_dir / "README_unmatched.md").write_text(
+        "\n".join(readme_lines), encoding="utf-8"
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="パターン別のルールレポートと解析済み入出力データを生成する。"
+        description="パターン別のレポート生成と unmatched 生成をまとめて行う。"
     )
     parser.add_argument(
         "--input-dir",
@@ -63,13 +100,25 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="各 Markdown レポートに含めるサンプル件数。",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["all", "reports", "unmatched"],
+        default="all",
+        help="`all` は report と unmatched を両方生成する。",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    generate_reports(args.input_dir, args.output_dir, args.sample_size)
-    print(f"Saved pattern reports to {args.output_dir}")
+    ran = []
+    if args.mode in {"all", "reports"}:
+        generate_reports(args.input_dir, args.output_dir, args.sample_size)
+        ran.append("reports")
+    if args.mode in {"all", "unmatched"}:
+        generate_unmatched(args.input_dir, args.output_dir)
+        ran.append("unmatched")
+    print(f"Saved {', '.join(ran)} to {args.output_dir}")
 
 
 if __name__ == "__main__":

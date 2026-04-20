@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .base import PatternExtractor
+from ..base import PatternExtractor
 
 
 class BitPromptExtractor(PatternExtractor):
@@ -18,21 +18,20 @@ class BitPromptExtractor(PatternExtractor):
 
         rows = []
         for pair in examples:
-            delta = format(int(pair["input"], 2) ^ int(pair["output"], 2), "08b")
-            flipped = [str(i) for i, bit in enumerate(delta) if bit == "1"]
+            input_positions = [str(i) for i, bit in enumerate(pair["input"]) if bit == "1"]
+            output_positions = [str(i) for i, bit in enumerate(pair["output"]) if bit == "1"]
             rows.append(
                 {
                     "input": pair["input"],
                     "output": pair["output"],
-                    "xor_delta": delta,
-                    "flipped_output_positions": flipped,
+                    "input_one_positions": input_positions,
+                    "output_one_positions": output_positions,
+                    "input_one_count": len(input_positions),
+                    "output_one_count": len(output_positions),
                 }
             )
 
-        diagram_lines = [
-            f"{row['input']} -> {row['output']}  xor={row['xor_delta']}  flip_pos={','.join(row['flipped_output_positions']) or '-'}"
-            for row in rows[:8]
-        ]
+        diagram_lines = [f"{row['input']} -> {row['output']}" for row in rows[:8]]
         diagram_lines.append(f"{target_input} -> {answer}  [対象]")
 
         return {
@@ -40,8 +39,9 @@ class BitPromptExtractor(PatternExtractor):
             "target_input": target_input,
             "answer": answer,
             "rule_summary": (
-                "8ビット列から8ビット列への変換です。例題ごとの入力と出力に加えて、"
-                "入力と出力の XOR 差分も併記しています。"
+                "8ビット列から8ビット列への変換です。プロンプトには回転・シフト・"
+                "AND/OR/XOR/NOT などの候補が書かれていますが、例題だけでは一意に決まりません。"
+                "そのため、ここでは入力と出力の対応だけを中立に並べています。"
             ),
             "relation_diagram": "\n".join(diagram_lines),
             "analysis": rows,

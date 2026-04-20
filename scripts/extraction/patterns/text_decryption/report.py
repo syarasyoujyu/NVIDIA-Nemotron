@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
-from .base import PatternExtractor
+from ..base import PatternExtractor
 
 
 class TextPromptExtractor(PatternExtractor):

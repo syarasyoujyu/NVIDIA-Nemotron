@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .base import PatternExtractor
+from ..base import PatternExtractor
 
 
 ROMAN_TOKENS = [

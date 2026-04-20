@@ -3,7 +3,7 @@ from __future__ import annotations
 import difflib
 from collections import Counter
 
-from .base import PatternExtractor
+from ..base import PatternExtractor
 
 
 class EquationPromptExtractor(PatternExtractor):
