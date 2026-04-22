@@ -33,7 +33,7 @@ def to_roman(value: int) -> str:
 
 
 class RomanValidator(PatternValidator):
-    pattern_name = "roman_numeral"
+    pattern_name = "numeral"
 
     def family_names(self) -> list[str]:
         return ["standard_roman_numeral"]

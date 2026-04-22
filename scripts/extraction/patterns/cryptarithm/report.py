@@ -8,7 +8,7 @@ from ..base import PatternExtractor, format_markdown_table
 
 
 class SymbolEquationExtractor(PatternExtractor):
-    pattern_name = "symbol_equation"
+    pattern_name = "cryptarithm"
 
     def parse_prompt(self, prompt: str, answer: str) -> dict:
         examples = []
@@ -118,11 +118,11 @@ class SymbolEquationExtractor(PatternExtractor):
 
 
 class SymbolEquationDeduceExtractor(SymbolEquationExtractor):
-    pattern_name = "symbol_equation/deduce"
+    pattern_name = "cryptarithm/deduce"
 
 
 class SymbolEquationGuessExtractor(SymbolEquationExtractor):
-    pattern_name = "symbol_equation/guess"
+    pattern_name = "cryptarithm/guess"
 
 
 EXTRACTOR = SymbolEquationExtractor()

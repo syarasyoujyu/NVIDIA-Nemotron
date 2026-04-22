@@ -43,7 +43,7 @@ def classify_deduce_guess(prompt: str, pattern: str) -> str:
     if not target or not examples_lhs:
         return "deduce"
 
-    if pattern == "symbol_equation":
+    if pattern == "cryptarithm":
         example_chars = set("".join(examples_lhs))
         return "deduce" if all(c in example_chars for c in target) else "guess"
 
@@ -79,12 +79,12 @@ RULES: list[Rule] = [
         in prompt,
     ),
     (
-        "text_decryption",
+        "cipher",
         "encrypted text to plain text",
         lambda prompt: "secret encryption rules are used on text" in prompt,
     ),
     (
-        "roman_numeral",
+        "numeral",
         "integer to Roman numeral conversion",
         lambda prompt: "converted into a different numeral system" in prompt,
     ),
@@ -94,7 +94,7 @@ RULES: list[Rule] = [
         lambda prompt: "secret unit conversion is applied to measurements" in prompt,
     ),
     (
-        "gravity_distance",
+        "gravity",
         "falling distance from modified gravitational constant",
         lambda prompt: "gravitational constant has been secretly changed" in prompt,
     ),
@@ -106,7 +106,7 @@ RULES: list[Rule] = [
         and _is_equation_with_numbers(prompt),
     ),
     (
-        "symbol_equation",
+        "cryptarithm",
         "equation transformation with symbol operands",
         lambda prompt: "secret set of transformation rules is applied to equations"
         in prompt
@@ -155,7 +155,7 @@ def split_dataset(input_csv: Path, output_dir: Path) -> None:
     output_fieldnames = list(fieldnames) + ["pattern"]
     summary = []
 
-    _DEDUCE_GUESS_PATTERNS = {"numeric_equation", "symbol_equation"}
+    _DEDUCE_GUESS_PATTERNS = {"numeric_equation", "cryptarithm"}
 
     for label, description, _ in RULES:
         rows = rows_by_pattern.get(label, [])

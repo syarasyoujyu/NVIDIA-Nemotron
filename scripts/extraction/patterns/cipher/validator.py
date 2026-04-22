@@ -32,7 +32,7 @@ def consistent_substitution(pairs: list[tuple[str, str]]) -> bool:
 
 
 class TextValidator(PatternValidator):
-    pattern_name = "text_decryption"
+    pattern_name = "cipher"
 
     def family_names(self) -> list[str]:
         return ["monoalphabetic_substitution_with_word_boundaries"]

@@ -6,7 +6,7 @@ from ..base import PatternExtractor
 
 
 class TextPromptExtractor(PatternExtractor):
-    pattern_name = "text_decryption"
+    pattern_name = "cipher"
 
     def parse_prompt(self, prompt: str, answer: str) -> dict:
         lines = prompt.splitlines()

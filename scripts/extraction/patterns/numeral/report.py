@@ -43,7 +43,7 @@ def decompose_roman(value: int) -> list[str]:
 
 
 class RomanPromptExtractor(PatternExtractor):
-    pattern_name = "roman_numeral"
+    pattern_name = "numeral"
 
     def parse_prompt(self, prompt: str, answer: str) -> dict:
         examples = [

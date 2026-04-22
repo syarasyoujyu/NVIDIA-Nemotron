@@ -12,7 +12,7 @@ def intersect_intervals(intervals: list[tuple[float, float]]) -> bool:
 
 
 class GravityValidator(PatternValidator):
-    pattern_name = "gravity_distance"
+    pattern_name = "gravity"
 
     def family_names(self) -> list[str]:
         return ["constant_g_in_d_equals_half_g_t_squared"]

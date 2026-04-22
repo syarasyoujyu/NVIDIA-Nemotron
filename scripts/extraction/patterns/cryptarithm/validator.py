@@ -6,7 +6,7 @@ from ..base import PatternValidator
 
 
 class SymbolEquationValidator(PatternValidator):
-    pattern_name = "symbol_equation"
+    pattern_name = "cryptarithm"
 
     def family_names(self) -> list[str]:
         return []
@@ -21,11 +21,11 @@ class SymbolEquationValidator(PatternValidator):
 
 
 class SymbolEquationDeduceValidator(SymbolEquationValidator):
-    pattern_name = "symbol_equation/deduce"
+    pattern_name = "cryptarithm/deduce"
 
 
 class SymbolEquationGuessValidator(SymbolEquationValidator):
-    pattern_name = "symbol_equation/guess"
+    pattern_name = "cryptarithm/guess"
 
 
 VALIDATOR = SymbolEquationValidator()

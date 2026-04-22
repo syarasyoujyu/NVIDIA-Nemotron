@@ -29,7 +29,7 @@ def interval_midpoint(low: Decimal, high: Decimal) -> Decimal:
 
 
 class GravityPromptExtractor(PatternExtractor):
-    pattern_name = "gravity_distance"
+    pattern_name = "gravity"
 
     def parse_prompt(self, prompt: str, answer: str) -> dict:
         examples = [
