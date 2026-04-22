@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from reasoners.store_types import Problem
+from scripts.cot_prompt.store_types import Problem
 
 _WONDERLAND_PATH = Path(__file__).parent / "wonderland.txt"
 

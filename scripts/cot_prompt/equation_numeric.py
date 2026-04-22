@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 
-from reasoners.store_types import Problem
+from scripts.cot_prompt.store_types import Problem
 
 _EXPR_RE = re.compile(r"^(\d+)(\D)(\d+)$")
 

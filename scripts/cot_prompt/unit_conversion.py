@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from reasoners.store_types import (
+from scripts.cot_prompt.store_types import (
     Problem,
     cast_dp_pair,
     long_division_lines,

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
-from reasoners.store_types import Problem
+from scripts.cot_prompt.store_types import Problem
 
 N_BITS = 8
 

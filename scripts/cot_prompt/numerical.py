@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from reasoners.store_types import Problem
+from scripts.cot_prompt.store_types import Problem
 
 ROMAN_VALUES: list[tuple[int, str]] = [
     (1000, "M"),

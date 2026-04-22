@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from reasoners.store_types import Problem
+from scripts.cot_prompt.store_types import Problem
 
 
 @dataclass
