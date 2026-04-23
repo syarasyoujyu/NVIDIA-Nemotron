@@ -1,10 +1,6 @@
 """Tinker のチェックポイントから LoRA アダプターを Kaggle にアップロードする。
-
-使い方:
-    uv run modal run --detach upload_adapter.py
-
 前提条件:
-    1. env.json に KAGGLE_API_TOKEN と TINKER_API_KEY が設定されていること
+    1. .env に KAGGLE_API_TOKEN と TINKER_API_KEY が設定されていること
     2. Tinker にトレーニング済みアダプターのチェックポイントが存在すること
 
 処理の流れ:
@@ -17,9 +13,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
+import urllib.request
 
 import modal
 from requests.exceptions import HTTPError
@@ -34,8 +33,10 @@ adapter_vol = modal.Volume.from_name("adapter-weights", create_if_missing=True)
 
 app = modal.App("upload-adapter-to-kaggle")
 
+# コンテナ内でのアダプター保存先（Modal ボリュームのマウントパス）
 ADAPTER_DIR = "/adapter/weights"
-DEFAULT_INSTANCE = "huikang/nemotron-adapter/Transformers/default"
+DEFAULT_INSTANCE = "yokoinaba/nemotron-adapter/Transformers/default"
+
 
 
 def _print_files(directory: str) -> list[str]:
@@ -58,12 +59,9 @@ def _print_files(directory: str) -> list[str]:
 )
 def download_adapter(tinker_model: str, tinker_env: dict[str, str]):
     """Tinker からアダプターの重みを Modal ボリュームにダウンロードする。"""
-    import re
-    import tarfile
-    import urllib.request
+    import tinker
 
     os.environ.update(tinker_env)
-    import tinker
 
     print(f"Downloading adapter from {tinker_model}...")
     os.makedirs(ADAPTER_DIR, exist_ok=True)
@@ -120,10 +118,8 @@ def download_adapter(tinker_model: str, tinker_env: dict[str, str]):
 )
 def upload_to_kaggle(kaggle_api_token: str):
     """Modal ボリュームから Kaggle へアダプターをアップロードする。"""
-    kaggle_dir = os.path.expanduser("~/.kaggle")
-    os.makedirs(kaggle_dir, exist_ok=True)
-    with open(os.path.join(kaggle_dir, "access_token"), "w") as f:
-        f.write(kaggle_api_token)
+    # kaggle/__init__.py が import 時に authenticate() を呼ぶため、先に環境変数を設定する
+    os.environ["KAGGLE_API_TOKEN"] = kaggle_api_token
 
     from kaggle.api.kaggle_api_extended import KaggleApi
 
@@ -206,15 +202,15 @@ def _find_latest_adapter() -> str:
 @app.local_entrypoint()
 def main():
     """Tinker から最新のアダプターをダウンロードし、Kaggle へアップロードする。"""
-    with open("env.json") as f:
-        env = json.load(f)
+    from dotenv import load_dotenv
+    load_dotenv()
 
     tinker_model = _find_latest_adapter()
     print(f"Tinker model: {tinker_model}")
     print(f"Kaggle instance: {DEFAULT_INSTANCE}")
 
-    kaggle_api_token = env["KAGGLE_API_TOKEN"]
-    tinker_env = {"TINKER_API_KEY": env["TINKER_API_KEY"]}
+    kaggle_api_token = os.environ["KAGGLE_API_TOKEN"]
+    tinker_env = {"TINKER_API_KEY": os.environ["TINKER_API_KEY"]}
 
     download_adapter.remote(tinker_model, tinker_env)
 

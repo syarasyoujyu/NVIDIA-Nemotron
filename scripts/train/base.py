@@ -10,6 +10,12 @@ from typing import Literal, TypedDict, cast
 import tinker
 
 from scripts.basic.common import load_jsonl
+from scripts.basic.const import CORPUS_DIR, CORPUS_INDEX
+from scripts.train.loss_config import (
+    CrossEntropyLossConfig,
+    CrossEntropyWithWeightingLossConfig,
+    LossConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +31,7 @@ Category = Literal[
     "unit_conversion",
 ]
 
-CORPUS_DIR = Path(__file__).parent / "corpus"
-CORPUS_INDEX = Path(__file__).parent / "corpus.jsonl"
+
 
 
 class CorpusEntry(TypedDict):
@@ -89,36 +94,56 @@ class TrainingExample:
 
 def build_datum(
     tokens: list[int],
-    mask: list[int],
-    max_length: int = 8192,
-) -> tinker.Datum | None:
-    """トークンとマスクから学習用データを構築する（0=マスク済み、1=未マスク）。"""
-    if len(tokens) > max_length:
-        tokens = tokens[:max_length]
-        mask = mask[:max_length]
-
-    if not any(mask):
-        return None
+    advantages: list[int],
+    ref_logprobs: list[float] | None,
+    prev_logprobs: list[float] | None,
+    epoch: int,
+    loss: LossConfig,
+) -> tinker.Datum:
+    """学習用データを構築する。"""
+    assert len(tokens) == len(advantages)
+    assert ref_logprobs is None or len(ref_logprobs) == len(tokens) - 1
+    assert prev_logprobs is None or len(prev_logprobs) == len(tokens) - 1
 
     model_input = tinker.ModelInput(
         chunks=[tinker.types.EncodedTextChunk(tokens=tokens[:-1])]
     )
     target_tokens = tokens[1:]
-    # 次トークン予測用の重み: 対応するマスク値を使う（未マスクのターゲットで学習）
-    weights = [float(m) for m in mask[1:]]
+
+    loss_fn_inputs: dict[str, tinker.TensorData] = {
+        "target_tokens": tinker.TensorData(
+            data=target_tokens,
+            dtype="int64",
+            shape=[len(target_tokens)],
+        ),
+    }
+
+    float_advantages = [float(a) for a in advantages[1:]]
+
+    if isinstance(loss, CrossEntropyLossConfig):
+        if isinstance(loss, CrossEntropyWithWeightingLossConfig):
+            float_advantages = loss.apply_weights(
+                float_advantages, prev_logprobs, ref_logprobs, epoch
+            )
+        loss_fn_inputs["weights"] = tinker.TensorData(
+            data=float_advantages,
+            dtype="float32",
+            shape=[len(float_advantages)],
+        )
+    else:
+        loss_fn_inputs["advantages"] = tinker.TensorData(
+            data=float_advantages,
+            dtype="float32",
+            shape=[len(float_advantages)],
+        )
+        if ref_logprobs is not None:
+            loss_fn_inputs["logprobs"] = tinker.TensorData(
+                data=ref_logprobs,
+                dtype="float32",
+                shape=[len(ref_logprobs)],
+            )
 
     return tinker.Datum(
         model_input=model_input,
-        loss_fn_inputs={
-            "weights": tinker.TensorData(
-                data=weights,
-                dtype="float32",
-                shape=[len(weights)],
-            ),
-            "target_tokens": tinker.TensorData(
-                data=target_tokens,
-                dtype="int64",
-                shape=[len(target_tokens)],
-            ),
-        },
+        loss_fn_inputs=loss_fn_inputs,
     )

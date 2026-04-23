@@ -1,11 +1,6 @@
 """nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 の SFT 学習を行い、エポックごとに logprob を保存する。
 
-対応する loss 関数: cross_entropy, importance_sampling, ppo, cispo, dro。
-
-（modal で学習する場合）
-uv run modal deploy trainer/server.py
-
-uv run python3 -m train_sft
+対応する loss 関数: cross_entropy, importance_sampling, ppo, cispo, dro
 """
 
 from __future__ import annotations
@@ -19,21 +14,19 @@ import random
 import time
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
-from typing import Literal
 
 import tinker
-from tinker import types
+from dotenv import load_dotenv
+from scripts.trainer.config import Cfg, IndexRecord, LogprobRecord
 
-from scripts.train.base import TrainingExample, load_corpus_entries
+from scripts.basic.const import SFT_DIR
+from scripts.train.base import TrainingExample, build_datum, load_corpus_entries
 from scripts.train.loss_config import (
-    CrossEntropyLossConfig,
-    CrossEntropyWithWeightingLossConfig,
     LossConfig,
 )
-from scripts.train.lr_schedule import LRSchedule, StepLinearDecayLRSchedule
 from scripts.trainer.client import ServiceClient
 
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 
@@ -68,128 +61,6 @@ def _stratified_batches(
     return batches
 
 
-@dataclasses.dataclass
-class AdamConfig:
-    beta1: float = 0.9
-    beta2: float = 0.95
-    eps: float = 1e-8
-    weight_decay: float = 0.0
-    grad_clip_norm: float = 1e9
-
-    def to_adam_params(self, learning_rate: float) -> types.AdamParams:
-        return types.AdamParams(
-            learning_rate=learning_rate,
-            beta1=self.beta1,
-            beta2=self.beta2,
-            eps=self.eps,
-            weight_decay=self.weight_decay,
-            grad_clip_norm=self.grad_clip_norm,
-        )
-
-
-@dataclasses.dataclass
-class Cfg:
-    loss_config: LossConfig = dataclasses.field(default_factory=CrossEntropyLossConfig)
-    lr_schedule: LRSchedule = dataclasses.field(
-        default_factory=lambda: StepLinearDecayLRSchedule(learning_rate=2e-4)
-    )
-    log_path: str = dataclasses.field(
-        default_factory=lambda: datetime.now().strftime("%m-%d-%H-%M")
-    )
-    model_name: str = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
-    batch_size: int = 64
-    num_epochs: int = 1
-    lora_rank: int = 32 # 32
-    max_length: int = 8192
-    train_mlp: bool = True
-    train_attn: bool = True
-    train_unembed: bool = True
-    adam_config: AdamConfig = dataclasses.field(default_factory=AdamConfig)
-    backend: Literal["tinker", "modal"] = "tinker"
-    micro_batch_size: int | None = 16  # tinker では None（サーバー側で決定）、modal では整数
-
-
-@dataclasses.dataclass
-class LogprobRecord:
-    problem_id: str
-    segment: str
-    logprobs: list[float]
-
-    def save(self, epoch_dir: Path) -> None:
-        stem = self.segment.removesuffix(".jsonl")
-        path = epoch_dir / self.problem_id / f"{stem}.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            f.write(json.dumps({"logprobs": self.logprobs}) + "\n")
-
-
-@dataclasses.dataclass
-class IndexRecord:
-    epoch: int
-    step: int
-    problem_id: str
-    segment: str
-    category: str
-    num_loss_tokens: int
-    total_loss: float
-    min_logprob: float
-
-
-def build_datum(
-    tokens: list[int],
-    advantages: list[int],
-    ref_logprobs: list[float] | None,
-    prev_logprobs: list[float] | None,
-    epoch: int,
-    loss: LossConfig,
-) -> tinker.Datum:
-    """学習用データを構築する。"""
-    assert len(tokens) == len(advantages)
-    assert ref_logprobs is None or len(ref_logprobs) == len(tokens) - 1
-    assert prev_logprobs is None or len(prev_logprobs) == len(tokens) - 1
-
-    model_input = tinker.ModelInput(
-        chunks=[tinker.types.EncodedTextChunk(tokens=tokens[:-1])]
-    )
-    target_tokens = tokens[1:]
-
-    loss_fn_inputs: dict[str, tinker.TensorData] = {
-        "target_tokens": tinker.TensorData(
-            data=target_tokens,
-            dtype="int64",
-            shape=[len(target_tokens)],
-        ),
-    }
-
-    float_advantages = [float(a) for a in advantages[1:]]
-
-    if isinstance(loss, CrossEntropyLossConfig):
-        if isinstance(loss, CrossEntropyWithWeightingLossConfig):
-            float_advantages = loss.apply_weights(
-                float_advantages, prev_logprobs, ref_logprobs, epoch
-            )
-        loss_fn_inputs["weights"] = tinker.TensorData(
-            data=float_advantages,
-            dtype="float32",
-            shape=[len(float_advantages)],
-        )
-    else:
-        loss_fn_inputs["advantages"] = tinker.TensorData(
-            data=float_advantages,
-            dtype="float32",
-            shape=[len(float_advantages)],
-        )
-        if ref_logprobs is not None:
-            loss_fn_inputs["logprobs"] = tinker.TensorData(
-                data=ref_logprobs,
-                dtype="float32",
-                shape=[len(ref_logprobs)],
-            )
-
-    return tinker.Datum(
-        model_input=model_input,
-        loss_fn_inputs=loss_fn_inputs,
-    )
 
 
 def compute_epoch_metrics(
@@ -256,20 +127,14 @@ def compute_epoch_metrics(
 
 
 def filter_training_examples(examples: list[TrainingExample]) -> list[TrainingExample]:
-    # 必要に応じてカテゴリで絞り込む。
-    return [
-        e
-        for e in examples
-        if e.category in ("spelling")
-    ]
-    # 全サンプルを使う場合は受け取ったサンプルをそのまま返す。
+    """必要に応じてカテゴリで絞り込む。"""
+    return examples[:10]
 
 
 async def main():
     cfg = Cfg()
 
-    sft_dir = Path("./training/sft")
-    log_path = sft_dir / cfg.log_path
+    log_path = SFT_DIR / cfg.log_path
     logprob_dir = log_path / "logprobs"
 
     # サンプルを読み込む
@@ -319,7 +184,7 @@ async def main():
         json.dump(config, f, indent=2)
 
     # GitHub Pages 用のログパス一覧に追記する
-    logpaths_file = sft_dir / "logpaths.txt"
+    logpaths_file = SFT_DIR / "logpaths.txt"
     existing = set(logpaths_file.read_text().splitlines()) if logpaths_file.exists() else set()
     if cfg.log_path not in existing:
         with open(logpaths_file, "a") as f:

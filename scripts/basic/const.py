@@ -9,10 +9,9 @@ CORPUS_DIR = Path("data/corpus")
 CORPUS_INDEX = Path("data/corpus.jsonl")
 TOKENIZER_PATH = Path("data/tokenizer.json")
 INVESTIGATIONS_DIR = Path("data/investigations")
-
+SFT_DIR = Path("data/training/sft")
 PROMPT_SUFFIX = (
     "\nPlease put your final answer inside `\\boxed{}`. "
     "For example: `\\boxed{your answer}`"
 )
-
 TOKEN_LIMIT = 8192

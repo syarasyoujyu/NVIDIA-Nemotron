@@ -1,6 +1,9 @@
 .PHONY: help patterns patterns-split patterns-reports
 
 UV := uv run python3
+UV_MODAL_RUN := uv run modal run
+
+UV_MODAL_DEPLOY:=uv run modal deploy
 PATTERN_DIR := data/patterns
 
 help:
@@ -20,6 +23,15 @@ patterns-reports:
 extend-data-from-problems:
 	$(UV) scripts/gen_data/gen_problems.py
 	$(UV) scripts/gen_data/gen_reasoning.py
+	$(UV) scripts/cot_prompt/check_cot.py
 	$(UV) scripts/gen_data/gen_corpus.py
 extend-data-from-results:
 	$(UV) scripts/gen_data/gen_result.py
+
+train-model:
+	$(UV) scripts/train/sft.py
+train-model-modal:
+	$(UV_MODAL_RUN) scripts/train/sft.py
+
+upload-adapter:
+	$(UV_MODAL_RUN) --detach scripts/submit/upload_adapter_to_kaggle.py
