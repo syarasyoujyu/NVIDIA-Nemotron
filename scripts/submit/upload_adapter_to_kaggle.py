@@ -17,14 +17,12 @@ import re
 import shutil
 import subprocess
 import tarfile
-import tempfile
 import urllib.request
 
 import modal
-from requests.exceptions import HTTPError
 
 kaggle_image = modal.Image.debian_slim(python_version="3.12").pip_install(
-    "kaggle>=1.6.0",
+    "kagglehub>=0.1.0",
     "tinker>=0.5.1",
     "pydantic>=2.0,<3.0",
 )
@@ -121,10 +119,7 @@ def upload_to_kaggle(kaggle_api_token: str):
     # kaggle/__init__.py が import 時に authenticate() を呼ぶため、先に環境変数を設定する
     os.environ["KAGGLE_API_TOKEN"] = kaggle_api_token
 
-    from kaggle.api.kaggle_api_extended import KaggleApi
-
-    api = KaggleApi()
-    api.authenticate()
+    import kagglehub
     print("Kaggle API authenticated")
 
     if not os.path.exists(ADAPTER_DIR):
@@ -132,52 +127,7 @@ def upload_to_kaggle(kaggle_api_token: str):
 
     files = _print_files(ADAPTER_DIR)
     print(f"Found {len(files)} files")
-
-    parts = DEFAULT_INSTANCE.split("/")
-    owner, model_slug, framework, instance_slug = (
-        parts[0],
-        parts[1],
-        parts[2],
-        parts[3],
-    )
-
-    def instance_exists() -> bool:
-        try:
-            api.model_instance_get(DEFAULT_INSTANCE)
-            return True
-        except HTTPError:
-            return False
-
-    if not instance_exists():
-        print(f"\nInstance {DEFAULT_INSTANCE} does not exist, creating...")
-
-        upload_dir = tempfile.mkdtemp()
-        for fname in files:
-            shutil.copy(os.path.join(ADAPTER_DIR, fname), upload_dir)
-
-        metadata = {
-            "ownerSlug": owner,
-            "modelSlug": model_slug,
-            "instanceSlug": instance_slug,
-            "framework": framework,
-            "licenseName": "Apache 2.0",
-            "overview": "Nemotron-3-Nano-30B LoRA adapter",
-        }
-        metadata_path = os.path.join(upload_dir, "model-instance-metadata.json")
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f)
-        print(f"Created metadata: {metadata}")
-
-        api.model_instance_create(upload_dir, dir_mode="skip")
-        print("Instance created")
-    else:
-        print(f"\nInstance {DEFAULT_INSTANCE} already exists")
-
-    print(f"\nUploading new version to {DEFAULT_INSTANCE}...")
-    api.model_instance_version_create(DEFAULT_INSTANCE, ADAPTER_DIR, dir_mode="skip")
-    print("Version created")
-
-    print("\nUpload complete!")
+    kagglehub.model_upload(DEFAULT_INSTANCE, ADAPTER_DIR)
     return "Success"
 
 
