@@ -5,6 +5,7 @@ UV_MODAL_RUN := uv run modal run
 
 UV_MODAL_DEPLOY:=uv run modal deploy
 PATTERN_DIR := data/patterns
+TRAIN_ARGS ?= --num_epochs 1 --batch-size 16 --learning-rate 2e-5
 
 help:
 	@echo "Available targets:"
@@ -29,9 +30,9 @@ extend-data-from-results:
 	$(UV) scripts/gen_data/gen_result.py
 
 train-model:
-	$(UV) scripts/train/sft.py
+	$(UV) scripts/train/sft.py $(TRAIN_ARGS)
 train-model-modal:
-	$(UV_MODAL_RUN) scripts/train/sft.py
+	$(UV_MODAL_DEPLOY) scripts/train/sft.py $(TRAIN_ARGS)
 
 upload-adapter:
 	$(UV_MODAL_RUN) --detach scripts/submit/upload_adapter_to_kaggle.py

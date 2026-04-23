@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import dataclasses
 import json
@@ -28,6 +29,41 @@ from scripts.trainer.client import ServiceClient
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def _build_cfg() -> Cfg:
+    p = argparse.ArgumentParser(description="SFT training script")
+    p.add_argument("--num_epochs", type=int)
+    p.add_argument("--batch_size", type=int)
+    p.add_argument("--lora_rank", type=int)
+    p.add_argument("--max_length", type=int)
+    p.add_argument("--log_path", type=str)
+    p.add_argument("--backend", choices=["tinker", "modal"])
+    p.add_argument("--micro_batch_size", type=int)
+    p.add_argument("--learning_rate", type=float)
+    p.add_argument("--train_mlp", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--train_attn", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--train_unembed", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--grad_clip_norm", type=float)
+    p.add_argument("--weight_decay", type=float)
+    args = p.parse_args()
+
+    cfg = Cfg()
+    for field in [
+        "num_epochs", "batch_size", "lora_rank", "max_length",
+        "log_path", "backend", "micro_batch_size",
+        "train_mlp", "train_attn", "train_unembed",
+    ]:
+        val = getattr(args, field)
+        if val is not None:
+            setattr(cfg, field, val)
+    if args.learning_rate is not None:
+        cfg.lr_schedule.learning_rate = args.learning_rate
+    if args.grad_clip_norm is not None:
+        cfg.adam_config.grad_clip_norm = args.grad_clip_norm
+    if args.weight_decay is not None:
+        cfg.adam_config.weight_decay = args.weight_decay
+    return cfg
 
 
 def _stratified_batches(
@@ -132,7 +168,7 @@ def filter_training_examples(examples: list[TrainingExample]) -> list[TrainingEx
 
 
 async def main():
-    cfg = Cfg()
+    cfg = _build_cfg()
 
     log_path = SFT_DIR / cfg.log_path
     logprob_dir = log_path / "logprobs"
