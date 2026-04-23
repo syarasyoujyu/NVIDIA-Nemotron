@@ -17,19 +17,18 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from scripts.cot_prompt.numeral import reasoning_numeral
-
 from scripts.cot_prompt.bit_manipulation import reasoning_bit_manipulation
 from scripts.cot_prompt.cipher import reasoning_cipher
 from scripts.cot_prompt.cryptarithm import reasoning_cryptarithm
 from scripts.cot_prompt.equation_numeric import reasoning_equation_numeric
 from scripts.cot_prompt.gravity import reasoning_gravity
+from scripts.cot_prompt.numeral import reasoning_numeral
 from scripts.cot_prompt.store_types import Problem
 from scripts.cot_prompt.unit_conversion import reasoning_unit_conversion
 
-PROBLEMS_INDEX = Path(__file__).parent / "problems.jsonl"
-REASONING_DIR = Path(__file__).parent / "reasoning"
-INVESTIGATIONS_DIR = Path(__file__).parent / "investigations"
+PROBLEMS_INDEX = Path("data/problems.jsonl")
+REASONING_DIR = Path("data/cot_prompt")
+INVESTIGATIONS_DIR = Path("data/investigations")
 INVESTIGATION_CATEGORIES: set[str] = {
     "cryptarithm_deduce",
     "cryptarithm_guess",

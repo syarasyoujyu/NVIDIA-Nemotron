@@ -93,7 +93,7 @@ class Problem:
 
     @classmethod
     def load_from_json(cls, id: str) -> "Problem":
-        with (Path("problems") / f"{id}.jsonl").open() as f:
+        with (Path("data/problems") / f"{id}.jsonl").open() as f:
             payload = cast(dict[str, Any], json.loads(f.readline()))
         return cls.from_payload(payload)
 
