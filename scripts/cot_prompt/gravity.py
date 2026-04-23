@@ -1,4 +1,4 @@
-"""Gravity: d = k * t^2 reasoning generator."""
+"""重力: d = k * t^2 の推論生成器。"""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def reasoning_gravity(problem: Problem) -> str | None:
 
     k_values = [float(s) for s in k_strs]
 
-    # List k values and pick median (for even count, use the smaller middle value)
+    # k 値を列挙し、中央値を選ぶ（偶数個の場合は小さい方の中央を使う）
     k_list_str = ", ".join(k_strs)
     lines.append(f"k values: {k_list_str}")
     paired = sorted(zip(k_values, k_strs))
@@ -76,7 +76,7 @@ def reasoning_gravity(problem: Problem) -> str | None:
     lines.append(f"d = {k_display} * {t_sq_str}:")
     mult_lines, mult_result = long_multiplication_lines(k_display, t_sq_str)
     lines.extend(mult_lines)
-    # Truncate to 3 decimal places
+    # 小数第3位までに切り捨てる
     dot = mult_result.index(".")
     boxed_answer = mult_result[: dot + 4]
     lines.append(f"= {boxed_answer}")

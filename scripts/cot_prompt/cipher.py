@@ -1,4 +1,4 @@
-"""Cipher: substitution cipher reasoning generator."""
+"""置換暗号の推論生成器。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ _WONDERLAND_PATH = Path(__file__).parent / "wonderland.txt"
 
 @lru_cache(maxsize=1)
 def _load_wonderland() -> list[str]:
-    """Load the Wonderland word list (sorted)."""
+    """ワンダーランドの単語リストを読み込む（ソート済み）。"""
     with _WONDERLAND_PATH.open() as f:
         words = [line.strip() for line in f if line.strip()]
     return sorted(words)
@@ -34,9 +34,9 @@ def _candidate_words_for_partial(
     plain_to_cipher: dict[str, str],
     cipher_word: str,
 ) -> list[str]:
-    """Find wonderland words matching a partial decryption with unknowns.
+    """未知文字を含む部分復号に一致するワンダーランド単語を探す。
 
-    Candidates must be consistent with cipher_to_plain (bijective mapping).
+    候補は cipher_to_plain（二単射の対応）と矛盾しない必要がある。
     """
     candidates: list[str] = []
     target_len = len(partial)
@@ -54,7 +54,7 @@ def _candidate_words_for_partial(
                 break
         if not match:
             continue
-        # Check forward consistency only (cipher->plain)
+        # 順方向の整合性のみ確認する（暗号→平文）
         consistent = True
         for cc, wc in zip(cipher_word, word):
             if cc in cipher_to_plain and cipher_to_plain[cc] != wc:
@@ -76,7 +76,7 @@ def reasoning_cipher(problem: Problem) -> str | None:
     )
     lines.append("I will put my final answer inside \\boxed{}.")
 
-    # List all input words (examples + question)
+    # 入力単語をすべて列挙する（例 + 質問）
     lines.append("")
     lines.append("Listing the input words:")
     for ex in problem.examples:
@@ -91,7 +91,7 @@ def reasoning_cipher(problem: Problem) -> str | None:
     for w in question_words_list:
         lines.append(f" {w}")
 
-    # Break down into characters (examples + question)
+    # 文字単位に分解する（例 + 質問）
     lines.append("")
     lines.append("Breaking down into characters:")
     for ex in problem.examples:
@@ -166,7 +166,7 @@ def reasoning_cipher(problem: Problem) -> str | None:
     decoded_words: list[str] = [""] * len(question_words)
     unknown_words: list[
         tuple[int, str, str, str, str]
-    ] = []  # (index, cipher_word, partial, display_partial, orig_dashed)
+    ] = []  # (添字, 暗号語, 部分復号, 表示用部分復号, 元のダッシュ表記)
 
     for i, cw in enumerate(question_words):
         decrypted_chars: list[str] = []
@@ -203,14 +203,14 @@ def reasoning_cipher(problem: Problem) -> str | None:
             )
             decoded_words[i] = partial
 
-    # Collect all unknown cipher chars across all question words
+    # すべての質問語に含まれる未知の暗号文字を集める
     all_unknown_chars: set[str] = set()
     for _, cw, _, _, _ in unknown_words:
         for cc in cw:
             if cc not in cipher_to_plain:
                 all_unknown_chars.add(cc)
 
-    # Show current sentence state
+    # 現在の文の状態を表示する
     sentence_parts = []
     for i, cw in enumerate(question_words):
         if decoded_words[i]:
@@ -250,7 +250,7 @@ def reasoning_cipher(problem: Problem) -> str | None:
         initial_c2p = dict(cipher_to_plain)
 
         for idx, cw, _partial_orig, display_partial, orig_dashed in unknown_words:
-            # Recompute partial with current mappings (may have new letters from previous words)
+            # 現在の対応で部分復号を再計算する（前の単語から新しい文字が増えている場合がある）
             partial = "".join(
                 cipher_to_plain[cc] if cc in cipher_to_plain else "?" for cc in cw
             )
@@ -278,7 +278,7 @@ def reasoning_cipher(problem: Problem) -> str | None:
                 lines.append("New mappings: none")
             lines.append(f"【{display_dashed}】")
 
-            # Iterate over all wonderland words, checking each against the partial
+            # ワンダーランド単語をすべて走査し、それぞれを部分復号と照合する
             target_len = len(cw)
             lines.append(f"The length of the word is {target_len}.")
             for word in wonderland_words:
@@ -286,7 +286,7 @@ def reasoning_cipher(problem: Problem) -> str | None:
                 if wlen != target_len:
                     lines.append(f"{word} {wlen} length")
                     continue
-                # Letter-by-letter comparison with early stop on mismatch
+                # 不一致が見つかったら早期終了する文字単位比較
                 word_dashed = dash.join(word)
                 comparisons: list[str] = []
                 mismatch_found = False
@@ -321,7 +321,7 @@ def reasoning_cipher(problem: Problem) -> str | None:
                     comp_str += f", {len(cw)} all match"
                 lines.append(f"{word} {wlen} 【{word_dashed}】, {comp_str}")
 
-            # Filter candidates: reject those mapping unknown cipher letters to already-mapped plain letters
+            # 候補を絞り込む: 未知の暗号文字を既に対応済みの平文文字へ写すものを除外する
             unmapped = {
                 c
                 for c in "abcdefghijklmnopqrstuvwxyz"
@@ -337,7 +337,7 @@ def reasoning_cipher(problem: Problem) -> str | None:
                 if not bad:
                     remaining.append(c)
 
-            # Prefer wonderland words among remaining
+            # 残った候補のうちワンダーランド単語を優先する
             wonderland_remaining = [c for c in remaining if c in wonderland_set]
             if wonderland_remaining:
                 chosen = wonderland_remaining[0]
@@ -348,11 +348,11 @@ def reasoning_cipher(problem: Problem) -> str | None:
             lines.append(f"Best match: 【{chosen}】")
             decoded_words[idx] = chosen
 
-            # Show resolved dashed display
+            # 解決後のダッシュ表記を表示する
             resolved_dashed = dash.join(chosen)
             lines.append(f"【{display_dashed}】->【{resolved_dashed}】")
 
-            # Per-letter breakdown: same vs new mapping
+            # 文字ごとの内訳: 既知対応か新規対応か
             new_mappings: list[str] = []
             pending_mappings: list[tuple[str, str]] = []
             for cc, pc in zip(cw, chosen):

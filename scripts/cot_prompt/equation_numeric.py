@@ -1,4 +1,4 @@
-"""Equation numeric reasoning generator."""
+"""数値式の推論生成器。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ _EXPR_RE = re.compile(r"^(\d+)(\D)(\d+)$")
 
 
 def _common_candidates(a: int, b: int, sa: str, sb: str) -> list[tuple[str, str]]:
-    """Common operations tried first."""
+    """先に試す一般的な演算。"""
     out: list[tuple[str, str]] = []
     out.append(("concatenation", sa + sb))
     out.append(("reverse concatenation", sb + sa))
@@ -26,7 +26,7 @@ def _common_candidates(a: int, b: int, sa: str, sb: str) -> list[tuple[str, str]
 
 
 def _rare_candidates(a: int, b: int, sa: str, sb: str) -> list[tuple[str, str]]:
-    """Rare operations tried if common ones don't match."""
+    """一般的な演算が合わない場合に試すまれな演算。"""
     out: list[tuple[str, str]] = []
     out.append(("multiply+1", str(a * b + 1)))
     out.append(("multiply-1", str(a * b - 1)))
@@ -63,12 +63,12 @@ def _rare_candidates(a: int, b: int, sa: str, sb: str) -> list[tuple[str, str]]:
 
 
 def _all_candidates(a: int, b: int, sa: str, sb: str) -> list[tuple[str, str]]:
-    """All candidates: common first, then rare."""
+    """全候補。一般的な演算を先にし、その後にまれな演算を並べる。"""
     return _common_candidates(a, b, sa, sb) + _rare_candidates(a, b, sa, sb)
 
 
 def _expr(name: str, a: str, b: str) -> str:
-    """Return the math expression for an operation, e.g. '94 + 48'."""
+    """演算に対応する数式を返す。例: '94 + 48'。"""
     if name == "addition":
         return f"{a} + {b}"
     if name == "subtraction (a-b)":
@@ -155,10 +155,10 @@ def _expr(name: str, a: str, b: str) -> str:
 
 
 def _expr_intermediate(name: str, a: str, b: str) -> str:
-    """Return intermediate evaluated form for operations with multiplications, else ''."""
+    """掛け算を含む演算なら途中計算の形を返し、それ以外は '' を返す。"""
     ia, ib = int(a), int(b)
     if name in ("multiply+1", "multiply-1", "multiplication") and len(a) >= 2:
-        # Decompose a by place value: 70 → [70, 0], 73 → [70, 3]
+        # a を位ごとに分解する: 70 → [70, 0]、73 → [70, 3]
         places = [int(d) * (10 ** (len(a) - 1 - i)) for i, d in enumerate(a)]
         decomp = " + ".join(f"{p} * {b}" for p in places)
         evald = " + ".join(str(p * ib) for p in places)
@@ -205,12 +205,12 @@ class FoundOp:
 
 
 def _apply_op(found: FoundOp, a_str: str, b_str: str) -> tuple[str, list[str]]:
-    """Apply the found operation and return (result, explanation_lines)."""
+    """見つかった演算を適用し、(結果, 説明行) を返す。"""
     steps: list[str] = []
     ta = a_str[::-1] if found.rev_ops else a_str
     tb = b_str[::-1] if found.rev_ops else b_str
 
-    # Header line always present
+    # 先頭行は常に出力する
     if found.rev_ops and found.rev_res:
         steps.append(
             f"reversed operands [{a_str}->{ta}, {b_str}->{tb}] and reversed result"
@@ -222,7 +222,7 @@ def _apply_op(found: FoundOp, a_str: str, b_str: str) -> tuple[str, list[str]]:
     else:
         steps.append("identity")
 
-    # Find the matching candidate
+    # 一致する候補を探す
     raw_result = ""
     for name, res in _all_candidates(int(ta), int(tb), ta, tb):
         if name == found.op_name:
@@ -287,7 +287,7 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
     for a, op, b, out in parsed:
         by_op[op].append((a, b, out))
 
-    # Precompute prefix/suffix format and transformed groups per operator
+    # 演算子ごとの接頭辞/接尾辞形式と変換済みグループを前計算する
     detected_fmts: dict[str, str] = {}
     transformed_groups: dict[str, list[tuple[str, str, str]]] = {}
     has_symbol_suffix = False
@@ -351,13 +351,13 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
         detected_fmts[op_char] = fmt
         transformed_groups[op_char] = transformed
 
-    # Build map from (a, op, b) to transformed output
+    # (a, op, b) から変換済み出力へのマップを作る
     transformed_map: dict[tuple[str, str, str], str] = {}
     for oc, tgroup in transformed_groups.items():
         for a, b, tout in tgroup:
             transformed_map[(a, oc, b)] = tout
 
-    # Check inputs for leading zeros
+    # 入力の先頭ゼロを確認する
     all_inputs: list[str] = []
     for a, _, b, _ in parsed:
         all_inputs.append(a)
@@ -365,7 +365,7 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
     lines.append("")
     lines.append(f"The inputs are {', '.join(all_inputs)}")
 
-    # Report outputs
+    # 出力を報告する
     all_outputs = [out for _, _, _, out in parsed]
     lines.append("")
     lines.append(f"The outputs are {', '.join(all_outputs)}")
@@ -380,7 +380,7 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
     if not has_symbol_suffix and not has_symbol_prefix:
         lines.append("No outputs have a symbol prefix or suffix.")
 
-    # Show transformed outputs if any transformation occurred
+    # 何らかの変換が起きていれば、変換済み出力を表示する
     any_transformed = any(fmt != "num" for fmt in detected_fmts.values())
     if any_transformed:
         t_all = [transformed_map.get((a, op, b), out) for a, op, b, out in parsed]
@@ -396,7 +396,7 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
 
     lines.append("")
 
-    # Show input → operator parsing
+    # 入力から演算子へのパース結果を表示する
     lines.append("Looking at the input of the examples")
     for a, op, b, out in parsed:
         lines.append(f"{a}{op}{b} -> {op}")
@@ -414,7 +414,7 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
     if q_match:
         lines.append(f"{problem.question} -> {q_op}")
 
-    # If question operator not in examples, fall back to most common example operator
+    # 質問の演算子が例にない場合は、例で最も多い演算子へフォールバックする
     effective_q_op = q_op
     if q_op is not None and q_op not in by_op and by_op:
         most_common_op = max(by_op, key=lambda op: len(by_op[op]))
@@ -429,12 +429,12 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
 
     found_ops: dict[str, FoundOp] = {}
 
-    # Analyze each operator (focus on question operator)
+    # 各演算子を分析する（質問の演算子を重点的に扱う）
     for op_char, group in sorted(by_op.items()):
         if effective_q_op is not None and op_char != effective_q_op and len(by_op) > 1:
             continue
 
-        # Use precomputed format and transformed group
+        # 前計算済みの形式と変換済みグループを使う
         detected_fmt = detected_fmts[op_char]
         group = transformed_groups[op_char]
 
@@ -444,7 +444,7 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
 
         a_str, b_str, expected = group[0]
 
-        # Try common operations first (all 4 combos), then rare operations
+        # 一般的な演算を先に試し（4通りすべて）、その後にまれな演算を試す
         found = None
 
         candidate_sets = [
@@ -460,10 +460,10 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
                 (True, False),
                 (False, True),
             ):
-                # Use fixed example order for paragraph header
+                # 段落ヘッダーには固定の例順を使う
                 cycled = list(group)
 
-                # Describe what we're trying
+                # 何を試しているかを説明する
                 label = f"{set_name} operations"
                 if rev_ops:
                     rev_parts = ", ".join(
@@ -498,14 +498,14 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
                         return f"f({a},{b}) ->{detail} {val}"
                     return f"f({a}, {b}) ={detail} {val}"
 
-                # Use first example for candidate generation
+                # 候補生成には最初の例を使う
                 ca_str, cb_str = cycled[0][0], cycled[0][1]
                 cta = ca_str[::-1] if rev_ops else ca_str
                 ctb = cb_str[::-1] if rev_ops else cb_str
                 candidates = cand_fn(int(cta), int(ctb), cta, ctb)
                 cand_idx = 0
                 for cand_name, cand_res in candidates:
-                    # Rotate which example is tried first within the paragraph
+                    # 段落内で最初に試す例をローテーションする
                     rotated = [cycled[(cand_idx + j) % n_ex] for j in range(n_ex)]
                     cand_idx += 1
 
@@ -571,7 +571,7 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
                 return None
             lines.append("  No matching operation found.")
 
-    # Apply to question
+    # 質問に適用する
     if not q_match or effective_q_op not in found_ops:
         return None
 

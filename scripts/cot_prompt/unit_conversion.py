@@ -1,4 +1,4 @@
-"""Unit conversion: output = factor * input reasoning generator."""
+"""単位変換: 出力 = 係数 * 入力 の推論生成器。"""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def reasoning_unit_conversion(problem: Problem) -> str | None:
 
     factors = [float(s) for s in factor_strs]
 
-    # List factor values and pick median (for even count, use the smaller middle value)
+    # 係数値を列挙し、中央値を選ぶ（偶数個の場合は小さい方の中央を使う）
     f_list_str = ", ".join(factor_strs)
     lines.append(f"factor values: {f_list_str}")
     paired = sorted(zip(factors, factor_strs))
@@ -64,7 +64,7 @@ def reasoning_unit_conversion(problem: Problem) -> str | None:
     lines.append(f"{q_str} * {med_display}:")
     mult_lines, mult_result = long_multiplication_lines(q_str, med_display)
     lines.extend(mult_lines)
-    # Truncate to 3 decimal places
+    # 小数第3位までに切り捨てる
     dot = mult_result.index(".")
     boxed_answer = mult_result[: dot + 4]
     lines.append(f"= {boxed_answer}")

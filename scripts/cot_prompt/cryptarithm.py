@@ -1,7 +1,7 @@
-"""Equation symbolic reasoning generator.
+"""記号式の推論生成器。
 
-Currently handles concatenation operators only (forward and reverse).
-Operates directly on the original symbols without letter assignment.
+現在は連結演算子のみを扱う（順方向と逆方向）。
+文字割り当てを行わず、元の記号を直接操作する。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ class _Ex:
 
 
 def _concat_type(exs: list[_Ex]) -> str | None:
-    """Return 'fwd' if A1A2B1B2, 'rev' if B1B2A1A2, else None."""
+    """A1A2B1B2 なら 'fwd'、B1B2A1A2 なら 'rev'、それ以外は None を返す。"""
     if all(ex.out == ex.a[0] + ex.a[1] + ex.b[0] + ex.b[1] for ex in exs):
         return "fwd"
     if all(ex.out == ex.b[0] + ex.b[1] + ex.a[0] + ex.a[1] for ex in exs):
@@ -29,12 +29,12 @@ def _concat_type(exs: list[_Ex]) -> str | None:
 
 
 def _box(s: str) -> str:
-    """Wrap each character in 【】 brackets."""
+    """各文字を 【】 で囲む。"""
     return "".join(f"【{c}】" for c in s)
 
 
 def reasoning_cryptarithm(problem: Problem) -> str | None:
-    """Generate reasoning for cryptarithm problems."""
+    """記号式問題の推論を生成する。"""
 
     def quote(s: str) -> str:
         return f"【{s}】"
@@ -60,19 +60,19 @@ def reasoning_cryptarithm(problem: Problem) -> str | None:
     q_op = q[2]
     q_b = (q[3], q[4])
 
-    # Group by operator
+    # 演算子ごとにまとめる
     by_op: dict[str, list[_Ex]] = {}
     for parsed_ex in exs:
         by_op.setdefault(parsed_ex.op, []).append(parsed_ex)
 
-    # Detect concat types for each operator
+    # 各演算子の連結タイプを検出する
     concat_types: dict[str, str] = {}
     for op, op_exs in by_op.items():
         ct = _concat_type(op_exs)
         if ct is not None:
             concat_types[op] = ct
 
-    # Check question operator for concatenation type (default to fwd if unknown)
+    # 質問の演算子について連結タイプを確認する（不明なら順方向を既定にする）
     if q_op in by_op:
         q_ct = _concat_type(by_op[q_op])
         if q_ct is None:
@@ -85,13 +85,13 @@ def reasoning_cryptarithm(problem: Problem) -> str | None:
     else:
         answer = q_b[0] + q_b[1] + q_a[0] + q_a[1]
 
-    # Generate trace
+    # 推論トレースを生成する
     lines: list[str] = []
     lines.append("We need to infer the transformation rule from the examples.")
     lines.append("I will put my final answer inside \\boxed{}.")
     lines.append("")
 
-    # Show each example with concatenation check
+    # 各例を連結チェックとともに表示する
     for ex, ex_parsed in zip(problem.examples, exs):
         orig_inp = str(ex.input_value)
         orig_out = str(ex.output_value)
@@ -118,7 +118,7 @@ def reasoning_cryptarithm(problem: Problem) -> str | None:
             f"  reverse concatenation: {_box(rev)} {'match' if is_rev else 'mismatch'}"
         )
 
-        # Operator line with type
+        # タイプ付きの演算子行
         ct = concat_types.get(ex_parsed.op)
         if ct == "fwd":
             op_type = "concatenation"
@@ -129,7 +129,7 @@ def reasoning_cryptarithm(problem: Problem) -> str | None:
         lines.append(f"  operator: {quote(ex_parsed.op)}{op_type}")
         lines.append("")
 
-    # Apply to question
+    # 質問に適用する
     q_op_known = q_op in concat_types
     op_label = "concatenation" if q_ct == "fwd" else "reverse concatenation"
 

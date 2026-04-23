@@ -1,4 +1,4 @@
-"""Numeral: Arabic to Roman reasoning generator."""
+"""数体系: アラビア数字からローマ数字への推論生成器。"""
 
 from __future__ import annotations
 

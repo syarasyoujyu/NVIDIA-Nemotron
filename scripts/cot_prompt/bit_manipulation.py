@@ -1,7 +1,7 @@
-"""Reasoning generator for 8-bit bit-manipulation tasks.
+"""8ビットのビット操作タスク向け推論生成器。
 
-The output follows the legacy trace style used by the existing reasoning files,
-with a strict-validity filter for candidate assignment vectors.
+出力は既存の推論ファイルで使われている従来のトレース形式に従い、
+候補割り当てベクトルには厳密な妥当性フィルタをかける。
 """
 
 from __future__ import annotations
@@ -31,14 +31,14 @@ SECTION_ORDER = (
     "XOR-NOT",
 )
 
-# Map section names to their constituent family codes.
+# セクション名を、それを構成する系統コードへ対応付ける。
 _SECTION_TO_FAMILIES = {
     "Identity": ("I",),
     "NOT": ("NOT",),
     "Constant": ("0", "1"),
 }
 
-# Reverse map: family code → section name.
+# 逆引きマップ: 系統コード → セクション名。
 _FAMILY_TO_SECTION: dict[str, str] = {}
 for _section in SECTION_ORDER:
     for _fam in _SECTION_TO_FAMILIES.get(_section, (_section,)):
@@ -66,13 +66,13 @@ class RuleCandidate:
     primary: Optional[int]
     secondary: Optional[int]
     expr: str
-    primary_stride: Optional[int] = None  # always +1 (stored as 1)
-    secondary_stride: Optional[int] = None  # always +1 (stored as 1)
+    primary_stride: Optional[int] = None  # 常に +1（1 として保存）
+    secondary_stride: Optional[int] = None  # 常に +1（1 として保存）
     primary_offset: Optional[int] = (
-        None  # primary at bit 0: primary = (offset + bit * stride) % 8
+        None  # ビット0での主オペランド位置
     )
     secondary_offset: Optional[int] = (
-        None  # secondary at bit 0: secondary = (offset + bit * stride) % 8
+        None  # ビット0での副オペランド位置
     )
 
     @property
@@ -137,7 +137,7 @@ def _apply_family(
 def _find_match(
     candidates: List[RuleCandidate], fam: str, ep: Optional[int], es: Optional[int]
 ) -> Optional[RuleCandidate]:
-    """Find candidate matching (fam, ep, es) by direct lookup."""
+    """指定した系統とオペランド位置に一致する候補を直接検索で探す。"""
     for c in candidates:
         if c.family != fam:
             continue
@@ -152,7 +152,7 @@ def _exists_anywhere(
     ep: Optional[int],
     es: Optional[int],
 ) -> bool:
-    """Check if operand pair (ep, es) exists in any bit position for this family."""
+    """この系統で指定したオペランド対がどこかのビット位置に存在するかを確認する。"""
     for bit_cands in all_matches:
         if _find_match(bit_cands, fam, ep, es) is not None:
             return True
@@ -165,7 +165,7 @@ def _fail_suffix(
     ep: Optional[int],
     es: Optional[int],
 ) -> str:
-    """Return 'y' if operand exists somewhere (wrong position), 'x' if nowhere."""
+    """オペランドがどこかにあれば 'y'（位置違い）、なければ 'x' を返す。"""
     if _exists_anywhere(all_matches, fam, ep, es):
         return "y"
     return "x"
@@ -174,9 +174,9 @@ def _fail_suffix(
 def _find_all_left_runs(
     all_matches: List[List[RuleCandidate]],
 ) -> List[Tuple[List[RuleCandidate], Optional[str]]]:
-    """All stride-consistent runs from bit 0, all stride combos per starter.
+    """ビット0から始まるストライド一貫の連続列を、開始候補ごとに列挙する。
 
-    Returns list of (chain, failed_next_expr) tuples.
+    戻り値は (chain, failed_next_expr) のリスト。
     """
     if not all_matches or not all_matches[0]:
         return []
@@ -186,7 +186,7 @@ def _find_all_left_runs(
         strides = [(1, 1)]
         for p_step, s_step in strides:
             chain = [start_cand]
-            # Track expected position independently (don't use found candidate's operands)
+            # 期待位置は独立に追跡する（見つかった候補のオペランドは使わない）
             cur_p = start_cand.primary
             cur_s = start_cand.secondary
             failed_next: Optional[str] = None
@@ -210,9 +210,9 @@ def _find_all_left_runs(
 def _find_all_right_runs(
     all_matches: List[List[RuleCandidate]],
 ) -> List[Tuple[List[RuleCandidate], Optional[str]]]:
-    """All stride-consistent runs ending at last bit, all stride combos per ender.
+    """最後のビットで終わるストライド一貫の連続列を、終了候補ごとに列挙する。
 
-    Returns list of (chain, failed_next_expr) tuples.
+    戻り値は (chain, failed_next_expr) のリスト。
     """
     n = len(all_matches)
     if not all_matches or not all_matches[-1]:
@@ -223,7 +223,7 @@ def _find_all_right_runs(
         strides = [(1, 1)]
         for p_step, s_step in strides:
             chain = [end_cand]
-            # Track expected position independently
+            # 期待位置は独立に追跡する
             cur_p = end_cand.primary
             cur_s = end_cand.secondary
             failed_next: Optional[str] = None
@@ -248,9 +248,9 @@ def _find_all_right_runs(
 def _lr_from_matches(
     all_matches: List[List[RuleCandidate]],
 ) -> Tuple[List[str], str, List[str], str]:
-    """Compute Left/Right from full per-bit match lists.
+    """ビットごとの完全な一致リストから左側/右側の候補を計算する。
 
-    Returns (left_all_lines, left_best, right_all_lines, right_best).
+    戻り値は (left_all_lines, left_best, right_all_lines, right_best)。
     """
     all_left_runs = _find_all_left_runs(all_matches)
     all_right_runs = _find_all_right_runs(all_matches)
@@ -298,7 +298,7 @@ def _format_list(
 
 
 def _compact_rule(c: RuleCandidate) -> str:
-    """Compact display: just the operand indices without family prefix."""
+    """コンパクト表示: 系統接頭辞を除いたオペランド添字のみ。"""
     if c.primary is not None and c.secondary is not None:
         return f"{c.primary}{c.secondary}"
     if c.primary is not None:
@@ -401,7 +401,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
 
     n_examples = len(outputs)
 
-    # 1) Example columns.
+    # 1) 例の列。
     output_columns = [_column_bits(outputs, i) for i in range(N_BITS)]
     input_columns = [_column_bits(inputs, i) for i in range(N_BITS)]
     input_inverted = [_invert(col) for col in input_columns]
@@ -411,7 +411,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
         name: [[] for _ in range(N_BITS)] for name in SECTION_ORDER
     }
 
-    # Build unary records and matches.
+    # 単項レコードと一致情報を作る。
     for out_idx, out_col in enumerate(output_columns):
         for i_col, in_col in enumerate(input_columns):
             if in_col == out_col:
@@ -431,7 +431,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
                 RuleCandidate("1", None, None, "C1")
             )
 
-    # Build unary raw records.
+    # 単項の生レコードを作る。
     for label, col in zip([str(i) for i in range(N_BITS)], input_columns):
         matches = tuple(i for i, oc in enumerate(output_columns) if col == oc)
         all_records["Identity"].append(
@@ -461,15 +461,15 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             )
         )
 
-    # Build pair records (ordered by circular difference for symmetric ops).
+    # ペアレコードを作る（対称演算では循環差分順に並べる）。
     fam: RuleFamily
     for fam in ("XOR", "OR", "AND"):
         for circ_diff in range(1, N_BITS // 2 + 1):
-            # For circ_diff == N_BITS/2, only half the circle to avoid duplicates
+            # circ_diff == N_BITS/2 の場合、重複を避けるため円周の半分だけ扱う
             n_pairs = N_BITS // 2 if circ_diff == N_BITS // 2 else N_BITS
             for a in range(n_pairs):
                 b = (a + circ_diff) % N_BITS
-                # Canonical pair for the operation: smaller index first
+                # 演算の正規ペア: 小さい添字を先にする
                 lo, hi = min(a, b), max(a, b)
                 col = _apply_family(input_columns[lo], input_columns[hi], fam)
                 matches = tuple(
@@ -514,34 +514,34 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
                         RuleCandidate(fam, a, b, f"{fam}{a}{b}")
                     )
 
-    # Deterministic order for unary/constant records (pair records already ordered by diff).
+    # 単項/定数レコードの決定的な順序（ペアレコードは既に差分順）。
     for name in ("Identity", "NOT", "Constant"):
         all_records[name].sort(key=lambda r: r.label)
 
     lines: List[str] = []
 
-    # 1) header
+    # 1) ヘッダー
     lines.append(
         "We need to deduce the transformation by matching the example outputs."
     )
     lines.append("I will put my final answer inside \\boxed{}.")
     lines.append("")
 
-    # 2) output examples
+    # 2) 出力例
     for i, out in enumerate(outputs):
         lines.append(f"Output {i}: {out}")
         for bit in range(N_BITS):
             lines.append(f"{bit} {out[bit]}")
         lines.append("")
 
-    # 3) output bit columns
+    # 3) 出力ビット列
     lines.append("Output bit columns (with bitsum as hash)")
     for bit in range(N_BITS):
         lines.append(
             f"{bit} {output_columns[bit]} {_column_hash(output_columns[bit], n_examples)}"
         )
 
-    # 4) input examples
+    # 4) 入力例
     lines.append("")
     for i, inp in enumerate(inputs):
         lines.append(f"Input {i}: {inp}")
@@ -549,22 +549,22 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             lines.append(f"{bit} {inp[bit]}")
         lines.append("")
 
-    # 5) Operation sections (raw data + matching + LRM)
+    # 5) 演算セクション（生データ + マッチング + LRM）
     lines.append("When matching output")
     lines.append("x: not in operator")
     lines.append("y: wrong position")
     lines.append("")
-    section_lefts: list[tuple[str, str]] = []  # (name, left_best)
-    section_rights: list[tuple[str, str]] = []  # (name, right_best)
+    section_lefts: list[tuple[str, str]] = []  # (名前, 左側の最良候補)
+    section_rights: list[tuple[str, str]] = []  # (名前, 右側の最良候補)
 
     def _add_section(name: str) -> None:
         records = all_records[name]
         per_bit = all_matches[name]
-        # Raw data
+        # 生データ
         lines.append(name)
         prev_diff = None
         for rec in records:
-            # Insert blank line between diff groups for pair operations
+            # ペア演算では差分グループの間に空行を入れる
             if (
                 len(rec.label) >= 2
                 and rec.label[0].isdigit()
@@ -579,7 +579,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
                 line += " match " + " ".join(str(i) for i in rec.matches)
             lines.append(line)
         lines.append("")
-        # Matching: per output bit, which candidates match
+        # マッチング: 各出力ビットにどの候補が一致するか
         lines.append("Matching output")
         for i in range(N_BITS):
             cands = per_bit[i]
@@ -613,11 +613,11 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
     for name in all_records:
         _add_section(name)
 
-    # 7) Selecting rule block.
+    # 7) ルール選択ブロック。
     lines.append("Selecting")
     lines.append("")
 
-    # Pick winners from per-section analysis
+    # セクションごとの分析から勝者を選ぶ
     def _parse_count(val: str) -> int:
         if val == "none":
             return 0
@@ -645,7 +645,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
         section_rights
     )
 
-    # Get the actual left/right runs from per-section matches
+    # セクションごとの一致から実際の左側/右側の連続列を取得する
     def _get_section_run(
         winner_name: Optional[str], direction: str
     ) -> List[RuleCandidate]:
@@ -700,7 +700,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
         lines.append(f"Best right: {right_winner_text}")
     lines.append("")
 
-    # Truncate if left + right > N_BITS: shorten the shorter one
+    # 左側 + 右側がビット数を超える場合は短い方を詰める
     left_len_final = left_winner_count
     right_len_final = right_winner_count
     if left_len_final + right_len_final > N_BITS:
@@ -744,7 +744,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             lines.append(f"{i} pending")
     lines.append("")
 
-    # Preferred: extrapolate left/right strides into pending slots
+    # 優先候補: 左側/右側のストライドを未確定スロットへ外挿する
     def _extrap_from(
         run: List[RuleCandidate],
         bit: int,
@@ -754,8 +754,8 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
         if not run:
             return None
         r = run[0]
-        # Derive offset from first candidate's position at run_start_bit
-        # offset = primary - run_start_bit * stride (mod N_BITS), stride=1
+        # 連続列の開始ビットにおける最初の候補位置からオフセットを導く
+        # オフセットは開始位置とストライドから計算する
         p = r.primary
         s = r.secondary
         if p is not None:
@@ -771,7 +771,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
         if ep is not None and es is not None:
             return f"?{ep}{es}"
         if ep is not None:
-            # Unary: show which slot is known
+            # 単項: どのスロットが既知かを表示する
             if side == "left":
                 return f"?{ep}?"
             else:
@@ -787,9 +787,9 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
     left_is_unary = left_fam in UNARY_FAMILIES if left_fam else False
     right_is_unary = right_fam in UNARY_FAMILIES if right_fam else False
 
-    # Preferred: extrapolate from the longer side first, then fill from the other
+    # 優先候補: 長い側から先に外挿し、その後でもう一方から埋める
     if right_winner_count > left_winner_count:
-        # Right is longer: extrapolate from right first
+        # 右側の方が長い: 右側から先に外挿する
         preferred: list[str] = []
         for i in range(N_BITS):
             if i >= right_start_final and right_run:
@@ -808,7 +808,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             lines.append(f"{i} {preferred[i]}")
         lines.append("")
 
-        # Fill remaining pending from left; merge unary digits
+        # 残りの未確定箇所を左側から埋め、単項の数字をマージする
         for i in range(N_BITS):
             if preferred[i] == "pending":
                 if left_is_binary or left_is_unary:
@@ -818,7 +818,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             elif "?" in preferred[i][1:] and left_is_unary:
                 el = _extrap_from(left_run, i, 0, "left")
                 if el:
-                    # Merge: fill unknown slots
+                    # マージ: 未知スロットを埋める
                     merged = list(preferred[i])
                     el_chars = list(el)
                     for j in range(1, min(len(merged), len(el_chars))):
@@ -831,7 +831,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             lines.append(f"{i} {preferred[i]}")
         lines.append("")
     else:
-        # Left is longer or equal: extrapolate from left first
+        # 左側が長い、または同じ長さ: 左側から先に外挿する
         preferred = []
         for i in range(N_BITS):
             if i < left_len_final:
@@ -850,7 +850,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             lines.append(f"{i} {preferred[i]}")
         lines.append("")
 
-        # Fill remaining pending from right; merge unary digits
+        # 残りの未確定箇所を右側から埋め、単項の数字をマージする
         for i in range(N_BITS):
             if preferred[i] == "pending":
                 if right_is_binary or right_is_unary:
@@ -860,7 +860,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             elif "?" in preferred[i][1:] and right_is_unary:
                 er = _extrap_from(right_run, i, right_start_final, "right")
                 if er:
-                    # Merge: fill unknown slots
+                    # マージ: 未知スロットを埋める
                     merged = list(preferred[i])
                     er_chars = list(er)
                     for j in range(1, min(len(merged), len(er_chars))):
@@ -881,17 +881,17 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             lines.append(f"{i} {pref}")
     lines.append("")
 
-    # Build the final vector: left + middle selection + right
+    # 最終ベクトルを作る: 左側 + 中央の選択 + 右側
     default_cand = RuleCandidate(DEFAULT_FAMILY, None, None, "default 1")
     best: List[RuleCandidate] = [default_cand] * N_BITS
 
-    # Place left and right runs
+    # 左側と右側の連続列を配置する
     for i, rc in enumerate(left_run):
         best[i] = rc
     for i, rc in enumerate(right_run):
         best[right_start_final + i] = rc
 
-    # Fill middle (pending) slots via Matching + Perfect match logic
+    # マッチングと完全一致ロジックで中央（未確定）スロットを埋める
     lines.append("Matching")
     pending_indices: list[int] = []
     per_bit_cat: dict[str, dict[int, list[RuleCandidate]]] = {
@@ -926,7 +926,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
                     checks.append("Constant absent")
             else:
                 found_c: Optional[RuleCandidate] = None
-                # Try both orderings; prefer the first (as shown in Preferred)
+                # 両方の順序を試し、最初の順序を優先する（優先候補に表示した順）
                 orderings = []
                 want_p = int(pref[1]) if len(pref) > 1 and pref[1] != "?" else None
                 want_s = int(pref[2]) if len(pref) > 2 and pref[2] != "?" else None
@@ -952,7 +952,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
         lines.append(f"{i} {pref_display} - {', '.join(checks)}")
     lines.append("")
 
-    # Perfect match: first category that covers ALL pending bits wins
+    # 完全一致: すべての未確定ビットを覆う最初のカテゴリが勝つ
     lines.append("Perfect match")
     chosen_cat: Optional[str] = None
     for cat in SECTION_ORDER:
@@ -966,7 +966,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             chosen_cat = cat
     lines.append("")
 
-    # Matched: use perfect-match category to fill pending slots
+    # 一致済み: 完全一致カテゴリを使って未確定スロットを埋める
     pending_set = set(pending_indices)
     lines.append("Matched")
     for i in range(N_BITS):
@@ -975,7 +975,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
                 best[i] = per_bit_cat[chosen_cat][i][0]
                 lines.append(f"{i} {best[i].expr}")
             else:
-                # No perfect match — list all candidates for this slot
+                # 完全一致がない場合は、このスロットの全候補を列挙する
                 all_cands: list[RuleCandidate] = []
                 for name in SECTION_ORDER:
                     if i in per_bit_cat[name]:
@@ -990,7 +990,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
             lines.append(f"{i} {best[i].expr}")
     lines.append("")
 
-    # Check if we have any non-default rules
+    # デフォルト以外のルールがあるか確認する
     if all(r.is_default for r in best):
         return None
 
@@ -998,7 +998,7 @@ def reasoning_bit_manipulation(problem: Problem) -> Optional[str]:
     for i, rule in enumerate(best):
         lines.append(f"{i} {rule.expr}")
 
-    # 8) Apply to question.
+    # 8) 質問に適用する。
     lines.append("")
     _emit_apply(lines, question_bits, best)
 

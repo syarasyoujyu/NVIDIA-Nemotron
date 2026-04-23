@@ -1,4 +1,4 @@
-"""Shared raw payload and runtime datatypes for solver problems."""
+"""ソルバー問題で共有する生ペイロードと実行時データ型。"""
 
 import json
 from pathlib import Path
@@ -111,12 +111,12 @@ class Problem:
 
 
 def _fmt_int_with_dp(value: int, dp: int) -> str:
-    """Format an integer as a decimal string with *dp* decimal places."""
+    """整数を指定した小数桁数の10進文字列として整形する。"""
     if dp == 0:
         return str(value)
     s = str(value).zfill(dp + 1)
     s = s[: len(s) - dp] + "." + s[len(s) - dp :]
-    # strip leading zeros but keep one before the dot
+    # 先頭のゼロを削るが、小数点前の1桁は残す
     s = s.lstrip("0") or "0"
     if s.startswith("."):
         s = "0" + s
@@ -124,7 +124,7 @@ def _fmt_int_with_dp(value: int, dp: int) -> str:
 
 
 def truncate_3dp(s: str) -> str:
-    """Truncate a decimal string to at most 3 decimal places (no rounding)."""
+    """10進文字列を最大で小数第3位まで切り捨てる（丸めなし）。"""
     if "." not in s:
         return s
     integer, frac = s.split(".")
@@ -140,7 +140,7 @@ def _dp_count(s: str) -> int:
 
 
 def pad_dp(s: str, n: int) -> str:
-    """Pad a decimal string to exactly *n* decimal places."""
+    """10進文字列を小数点以下ちょうど指定桁数に揃える。"""
     if "." not in s:
         s = s + "."
     integer, frac = s.split(".")
@@ -148,10 +148,10 @@ def pad_dp(s: str, n: int) -> str:
 
 
 def cast_dp_pair(a: str, b: str) -> tuple[str, str, int, int]:
-    """Pad *a* and *b* to the same number of decimal places.
+    """2つの値の小数点以下桁数を同じに揃える。
 
-    Returns (a_padded, b_padded, a_target_dp, b_target_dp).
-    Target dp is the max of both; individual values show what each was cast to.
+    戻り値は (a_padded, b_padded, a_target_dp, b_target_dp)。
+    目標桁数は両者の最大値で、個別の値はそれぞれ何桁へ揃えたかを示す。
     """
     da, db = _dp_count(a), _dp_count(b)
     target = max(da, db)
@@ -159,12 +159,11 @@ def cast_dp_pair(a: str, b: str) -> tuple[str, str, int, int]:
 
 
 def long_multiplication_lines(a_str: str, b_str: str) -> tuple[list[str], str]:
-    """Generate step-by-step multiplication of two decimal numbers.
+    """2つの10進数の筆算風の掛け算手順を生成する。
 
-    Decomposes *b* into place-value components and multiplies *a* by each,
-    then shows a running sum.
+    *b* を位取りごとの成分へ分解し、それぞれに *a* を掛けてから累積和を表示する。
 
-    Returns (lines, result_str) where result_str is the exact product.
+    戻り値は (lines, result_str)。result_str は正確な積。
     """
     a_dp = len(a_str.split(".")[1]) if "." in a_str else 0
     b_dp = len(b_str.split(".")[1]) if "." in b_str else 0
@@ -175,34 +174,34 @@ def long_multiplication_lines(a_str: str, b_str: str) -> tuple[list[str], str]:
 
     lines: list[str] = []
 
-    # Break b into place-value components, least significant digit first
+    # 乗数を位取り成分へ分解する（最下位桁から）
     b_digits_str = str(abs(b_int))
     b_num_digits = len(b_digits_str)
 
-    # (component_display, product_int_scaled, product_display)
+    # (成分表示, スケール済み積の整数値, 積の表示)
     components: list[tuple[str, int, str]] = []
     for i in range(b_num_digits - 1, -1, -1):
         d = int(b_digits_str[i])
         if d == 0:
             continue
-        # Component value scaled by 10^b_dp
+        # 乗数の小数桁数に合わせてスケール済みの成分値
         comp_scaled = d * (10 ** (b_num_digits - 1 - i))
         comp_display = _fmt_int_with_dp(comp_scaled, b_dp)
         if b_dp > 0:
             comp_display = pad_dp(comp_display, b_dp)
 
-        product_int = a_int * comp_scaled  # scaled by 10^total_dp
+        product_int = a_int * comp_scaled  # 全体の小数桁数に合わせてスケール済み
         product_display = _fmt_int_with_dp(product_int, total_dp)
         if total_dp > 0:
             product_display = pad_dp(product_display, total_dp)
 
         components.append((comp_display, product_int, product_display))
 
-    # Multiplication lines: a * component = product
+    # 掛け算の行: a * 成分 = 積
     for comp_display, _, product_display in components:
         lines.append(f"{a_str} * {comp_display} = {product_display}")
 
-    # Running sum (fold from smallest to largest)
+    # 累積和（小さい位から大きい位へ畳み込む）
     if len(components) >= 2:
         running = components[0][1]
         for i in range(1, len(components)):
@@ -215,7 +214,7 @@ def long_multiplication_lines(a_str: str, b_str: str) -> tuple[list[str], str]:
                 sum_display = pad_dp(sum_display, total_dp)
             lines.append(f"{running_display} + {components[i][2]} = {sum_display}")
 
-    # Compute final result string
+    # 最終結果の文字列を計算する
     total = a_int * b_int
     result_str = _fmt_int_with_dp(total, total_dp)
     return lines, result_str
@@ -224,9 +223,9 @@ def long_multiplication_lines(a_str: str, b_str: str) -> tuple[list[str], str]:
 def long_division_lines(
     numerator_str: str, denominator_str: str, max_decimal_digits: int = 3
 ) -> tuple[list[str], str]:
-    """Generate long-division steps via repeated subtraction.
+    """反復減算による筆算風の割り算手順を生成する。
 
-    Returns (lines, result_str) where result_str is the truncated quotient.
+    戻り値は (lines, result_str)。result_str は切り捨て済みの商。
     """
     n_dp: int = len(numerator_str.split(".")[1]) if "." in numerator_str else 0
     d_dp: int = len(denominator_str.split(".")[1]) if "." in denominator_str else 0
@@ -236,7 +235,7 @@ def long_division_lines(
     den: int = int(round(float(denominator_str) * 10**max_dp))
 
     lines: list[str] = []
-    acc: int = 0  # accumulator as integer; real value = acc / 10^decimal_digits
+    acc: int = 0  # 整数としての累積値。実値は累積値を小数桁数で割ったもの
     decimal_digits: int = 0
 
     def fmt_acc() -> str:
@@ -268,7 +267,7 @@ def long_division_lines(
             acc *= 10
             lines.append(fmt_line(num))
 
-    # Restore decimal_digits if it was incremented past max before breaking
+    # ループ終了前に小数桁数が上限を超えて増えていた場合は戻す
     if decimal_digits > max_decimal_digits:
         decimal_digits = max_decimal_digits
     return lines, fmt_acc()
