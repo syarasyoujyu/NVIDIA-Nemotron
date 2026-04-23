@@ -16,3 +16,10 @@ patterns-split:
 
 patterns-reports:
 	$(UV) scripts/extraction/generate_pattern_rule_reports.py --input-dir $(PATTERN_DIR) --output-dir $(PATTERN_DIR) --mode all
+
+extend-data-from-problems:
+	$(UV) scripts/gen_data/gen_problems.py
+	$(UV) scripts/gen_data/gen_reasoning.py
+	$(UV) scripts/gen_data/gen_corpus.py
+extend-data-from-results:
+	$(UV) scripts/gen_data/gen_result.py

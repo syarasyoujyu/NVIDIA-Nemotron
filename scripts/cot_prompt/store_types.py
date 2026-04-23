@@ -1,8 +1,9 @@
 """ソルバー問題で共有する生ペイロードと実行時データ型。"""
 
 import json
-from pathlib import Path
 from typing import Any, Literal, cast
+
+from scripts.basic.const import PROBLEM_DIR, PROBLEMS_INDEX
 
 ProblemCategory = Literal[
     "bit_manipulation",
@@ -93,20 +94,19 @@ class Problem:
 
     @classmethod
     def load_from_json(cls, id: str) -> "Problem":
-        with (Path("data/problems") / f"{id}.jsonl").open() as f:
+        with (PROBLEM_DIR/ f"{id}.jsonl").open() as f:
             payload = cast(dict[str, Any], json.loads(f.readline()))
         return cls.from_payload(payload)
 
     @classmethod
     def load_all(cls) -> list["Problem"]:
         problems: list[Problem] = []
-        for path in sorted(Path("problems").glob("*.jsonl")):
-            with path.open() as f:
-                line = f.readline().strip()
-            if line:
-                problems.append(
-                    cls.from_payload(cast(dict[str, Any], json.loads(line)))
-                )
+        with PROBLEMS_INDEX.open() as f:
+            line = f.readline().strip()
+        if line:
+            problems.append(
+                cls.from_payload(cast(dict[str, Any], json.loads(line)))
+            )
         return problems
 
 

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
 import tinker
+
+from scripts.basic.common import load_jsonl
 
 logger = logging.getLogger(__name__)
 
@@ -39,17 +40,6 @@ class CorpusEntry(TypedDict):
     token_count: int
     answer: str
     included: bool
-
-
-def load_jsonl(path: Path) -> list[dict]:
-    """JSON Lines ファイルを読み込む。"""
-    entries = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                entries.append(json.loads(line))
-    return entries
 
 
 def load_corpus_entries() -> list[CorpusEntry]:

@@ -1,8 +1,12 @@
-"""規則発見済みの各問題に対して決定的な推論テキストを生成する。
+"""rule_found の各問題に対して決定的な推論テキストを生成する。
 
-規則が見つかった各問題について reasoning/<problem_id>.txt を作成する。
-cryptarithm_guess はスキップする。推論はソルバーロジックを自然な
+ルールが見つかった問題ごとに reasoning/<problem_id>.txt を作成する。
+cryptarithm_guess はスキップ。推論はソルバーロジックを自然な
 思考過程トレースとして反映する。
+
+使い方:
+    uv run reasoning.py
+    uv run reasoning.py --delete-investigations   # 答えが正しい場合に調査ファイルを削除する
 """
 
 import argparse
@@ -23,7 +27,7 @@ from scripts.cot_prompt.store_types import Problem
 
 
 def extract_answer(reasoning_text: str) -> str:
-    """既存の答え抽出処理と同じ形で \\boxed{...} から答えを抽出する。"""
+    """\\boxed{...} から答えを抽出する（metric_reference.extract_final_answer と同じ方式）。"""
     matches = re.findall(r"\\boxed\{([^}]*)(?:\}|$)", reasoning_text)
     if matches:
         non_empty = [m.strip() for m in matches if m.strip()]
