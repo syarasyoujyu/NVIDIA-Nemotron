@@ -10,10 +10,10 @@ import json
 from pathlib import Path
 
 from ..base import PatternValidator
-from .label import _flow_label
+from .label import _flow_label, _flow_sort_key
 from .matching import _best_mode_for_group
 from .parser import _parse_lhs, _parse_op_groups
-from .predict import _all_modes_for_group, _predict
+from .predict import _all_modes_for_group, _consistent_mode_set, _predict
 
 
 class NumericEquationValidator(PatternValidator):
@@ -42,9 +42,10 @@ class NumericEquationValidator(PatternValidator):
         return pairs
 
     def matches_family(self, row: dict[str, str], family_name: str) -> bool:
-        """全演算子グループが何らかのモードでマッチするかを検証する。
+        """全演算子グループで共通するモードが存在するかを検証する。
 
-        演算子ごとに独立してルールを探索し、全グループで成立すればマッチ。
+        反転・交換・出力変換の組み合わせ (rev_in, swap, out_mode) は
+        全演算子で統一されることを前提とし、共通モードが1つ以上存在すればマッチ。
         """
         if family_name != "per_operator_any_mode":
             return False
@@ -54,28 +55,47 @@ class NumericEquationValidator(PatternValidator):
         op_groups = _parse_op_groups(pairs)
         if op_groups is None:
             return False
-        return all(
-            _best_mode_for_group(examples) is not None
-            for examples in op_groups.values()
-        )
+        return bool(_consistent_mode_set(op_groups))
 
     def _extra_unmatched_fields(self, row: dict[str, str]) -> dict[str, str]:
-        """アンマッチ行に対して、どの演算子記号がマッチ失敗かを記録する。"""
+        """アンマッチ行に対して、失敗の種別を記録する。"""
         pairs = self._parse_pairs(row)
         op_groups = _parse_op_groups(pairs)
         if op_groups is None:
             return {"failed_operators": "parse_error"}
+        if _consistent_mode_set(op_groups):
+            return {"failed_operators": ""}
+        # 個別にマッチしない演算子を探す
         failed = [op for op, examples in op_groups.items() if _best_mode_for_group(examples) is None]
-        return {"failed_operators": "|".join(failed) if failed else ""}
+        if failed:
+            return {"failed_operators": "|".join(failed)}
+        # 各演算子は個別には一致するが共通モードなし
+        return {"failed_operators": "no_consistent_mode"}
+
+    def _leftmost_flow_for_examples(
+        self,
+        examples: list[tuple[str, str, str, str]],
+        allowed_modes: set[tuple[bool, bool, str]] | None = None,
+    ) -> str | None:
+        """成立する全候補から、表示順で最も左に来るフローを選ぶ。"""
+        flows = [
+            _flow_label(op_name, offset, *mode)
+            for mode, op_name, offset in _all_modes_for_group(examples, allowed_modes=allowed_modes)
+        ]
+        if not flows:
+            return None
+        return sorted(set(flows), key=_flow_sort_key)[0]
 
     def _build_matched_entry(self, row: dict[str, str]) -> dict | None:
         """マッチした行のエントリーを構築する。
 
-        - operator_flows: 演算子記号 → 確定フローラベル（answer込み）
-        - example_alternatives: 例示のみから導かれる代案が予測を分岐させる場合のみ記録
-          - target_operator: ターゲット入力の演算子記号
-          - target_answer: 実際の答え
-          - answer_flow: answerを含めた場合の確定フロー
+        以下の推論フローで解法候補を決定する:
+          1. 例示のみから全演算子で共通するモード集合を求める
+          2. 各モードを固定し、例示と合う演算の候補を列挙（alt_flows の元）
+          3. その中から回答とも一致する候補を絞り込む
+          4. 全モードを通じた候補の中で最も単純なフローを選択 → answer_flow / best_mode
+        operator_flows は best_mode 下での各演算子の最左フロー。
+        alt_flows は best_mode での例示候補（ステップ2）のうちターゲット演算子分をリスト化。
         """
         result = self.validate_row(row)
         if not result.matched:
@@ -86,35 +106,66 @@ class NumericEquationValidator(PatternValidator):
         if op_groups is None:
             return None
 
-        # 演算子ごとに最良ルールを決定してフローラベルを生成
-        operator_flows = {}
-        for op_char, examples in op_groups.items():
-            best = _best_mode_for_group(examples)
-            if best:
-                mode, op_name, offset = best
-                rev_in, swap, out_mode = mode
-                operator_flows[op_char] = _flow_label(op_name, offset, rev_in, swap, out_mode)
-
-        # 例示のみ（answer除外）でターゲット演算子の別解を計算
+        # 例示のみ（answer除外）の演算子グループ
         example_pairs = pairs[:-1]
         example_op_groups = _parse_op_groups(example_pairs) or {}
         target_lhs, _ = pairs[-1]
         target_parsed = _parse_lhs(target_lhs)
         target_op = target_parsed[1] if target_parsed else None
 
+        # ステップ1〜4: ターゲット演算子の解法候補を求める
+        best_mode: tuple[bool, bool, str] | None = None
+        answer_flow: str | None = None
         example_alternatives: dict[str, str] = {}
+
         if target_op and target_parsed and target_op in example_op_groups:
             ta, _, tb = target_parsed
-            all_modes = _all_modes_for_group(example_op_groups[target_op])
-            predictions: dict[str, str] = {}
-            for mode, op_name, offset in all_modes:
-                rev_in, swap, out_mode = mode
-                label = _flow_label(op_name, offset, rev_in, swap, out_mode)
-                pred = _predict(ta, tb, target_op, op_name, offset, rev_in, swap, out_mode)
-                predictions[label] = pred if pred is not None else "?"
-            # 予測が分岐する場合のみ別解として記録
-            if len(set(predictions.values())) > 1:
-                example_alternatives = predictions
+            consistent_ex_modes = _consistent_mode_set(example_op_groups)
+
+            # ステップ2+3: 各モードで例示に合う候補を求め、回答と一致するものを収集
+            solution_candidates: list[tuple[tuple[bool, bool, str], str, int]] = []
+            for mode in consistent_ex_modes:
+                for m, op_name, offset in _all_modes_for_group(
+                    example_op_groups[target_op], allowed_modes={mode}
+                ):
+                    pred = _predict(ta, tb, target_op, op_name, offset, *m)
+                    if pred == row["answer"]:
+                        solution_candidates.append((m, op_name, offset))
+
+            # ステップ4: 最も単純なフローを選択
+            if solution_candidates:
+                best_m, best_op, best_offset = min(
+                    solution_candidates,
+                    key=lambda x: _flow_sort_key(_flow_label(x[1], x[2], *x[0])),
+                )
+                best_mode = best_m
+                answer_flow = _flow_label(best_op, best_offset, *best_mode)
+
+                # alt_flows: best_mode での例示候補（ステップ2の結果）
+                predictions: dict[str, str] = {}
+                for m, op_name, offset in _all_modes_for_group(
+                    example_op_groups[target_op], allowed_modes={best_mode}
+                ):
+                    label = _flow_label(op_name, offset, *m)
+                    pred = _predict(ta, tb, target_op, op_name, offset, *m)
+                    if pred is not None:
+                        predictions[label] = pred
+                sorted_predictions = dict(
+                    sorted(predictions.items(), key=lambda item: _flow_sort_key(item[0]))
+                )
+                if len(set(sorted_predictions.values())) > 1:
+                    example_alternatives = sorted_predictions
+
+        # operator_flows: best_mode 優先、フォールバックは全共通モード
+        consistent_modes = _consistent_mode_set(op_groups)
+        effective_modes = {best_mode} if best_mode else (consistent_modes if consistent_modes else None)
+        operator_flows: dict[str, str] = {}
+        for op_char, examples in op_groups.items():
+            flow = self._leftmost_flow_for_examples(examples, allowed_modes=effective_modes)
+            if flow is not None:
+                operator_flows[op_char] = flow
+        if target_op and answer_flow:
+            operator_flows[target_op] = answer_flow
 
         entry: dict = {
             "id": row["id"],
@@ -125,7 +176,7 @@ class NumericEquationValidator(PatternValidator):
             entry["example_alternatives"] = example_alternatives
             entry["target_operator"] = target_op
             entry["target_answer"] = row["answer"]
-            entry["answer_flow"] = operator_flows.get(target_op, "")
+            entry["answer_flow"] = answer_flow
         return entry
 
     def write_outputs(self, output_root: Path, rows: list[dict[str, str]]) -> dict[str, str]:

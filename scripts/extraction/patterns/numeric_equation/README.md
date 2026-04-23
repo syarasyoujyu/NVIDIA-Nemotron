@@ -64,10 +64,16 @@ Now, determine the result for: 56*78
 
 ### フェーズ1: offset=0 の通常演算
 
-全12モード × 全演算（add/sub/mul/abs_diff/neg_abs_diff/mod/concat/concat_strip）を試す。
+有効モード × 全演算（add/sub/mul/abs_diff/neg_abs_diff/mod/concat/concat_strip）を試す。
 **offset=0 のみ許可**（最もシンプルなルールを優先）。
 
 モードの探索順: `(rev_in=False, swap=False)` → `(True, False)` → `(False, True)` → `(True, True)` の順に、`out_mode=none → num_rev → full_rev` を試す。
+
+ただし以下の制約に合わないモードは候補から除外する:
+
+- `num_rev` / `num_rev_sfx` / `full_rev` は `rev_in=True` の後にのみ許可する
+- `rev_in=True` の場合、最後に `num_rev` / `num_rev_sfx` / `full_rev` のいずれかを必須とする
+- `swap=True` は `rev_in=True` の後にのみ許可する
 
 ### フェーズ1.5: 特殊出力パターン
 
@@ -97,13 +103,24 @@ Now, determine the result for: 56*78
 
 結果は `alternatives.csv` に出力される（1行=1問題）。
 
+`answer_flow` および `matched.jsonl` におけるターゲット演算子の `operator_flows` は、ターゲット入力に対して実際に `answer` を予測する候補を全て列挙し、下記の「別解フローの並び順」で最も左に来るフローを採用する。
+
+### 別解フローの並び順
+
+`alt_flows` は見やすさのため、以下の優先順位で昇順ソートする。
+
+1. `→` の数が少ないものを前にする（ステップ数が多いものは後ろ）
+2. 演算ラベルに `（絶対値）` や `（先頭0除去）` などの括弧付きコマンドが少ないものを前にする
+3. 最後が反転操作の場合、`全反転` を `数値反転` より後ろにする
+4. ここまで同じ場合はフロー文字列の辞書順にする
+
 ### alternatives.csv の列
 
 | 列 | 説明 |
 |---|---|
 | `id` | 問題ID |
 | `target_operator` | ターゲット入力の演算子記号 |
-| `answer_flow` | answer込みで確定したフロー |
+| `answer_flow` | answer込みで成立する候補のうち、別解フローの並び順で最も左に来るフロー |
 | `answer` | 実際の答え |
 | `alt_flows` | 例示のみから導かれる代案フローのリスト（JSON配列） |
 | `alt_predictions` | 各代案の予測値リスト（JSON配列） |
@@ -119,3 +136,9 @@ Now, determine the result for: 56*78
 | `unmatched_summary.json` | マッチ率のサマリー |
 | `matched.jsonl` | マッチ成功行の演算子フロー詳細 |
 | `alternatives.csv` | 別解が存在する問題一覧 |
+
+## 規則性のメモ
+- 数値反転系・全反転は、最初に反転がある場合のみ適用できる
+- 反転があるなら、最後は数値反転系(or全反転)
+- 交換は反転の後にのみ適用できる
+- 演算を適用させる場合は、右辺＆左辺の数値の先頭は必ず0ではない

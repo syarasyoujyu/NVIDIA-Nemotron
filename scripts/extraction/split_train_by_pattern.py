@@ -122,6 +122,74 @@ def classify_prompt(prompt: str) -> str | None:
     return None
 
 
+DEDUCE_GUESS_PATTERNS = {"numeric_equation", "cryptarithm"}
+
+
+def classify_category(prompt: str) -> str | None:
+    pattern = classify_prompt(prompt)
+    if pattern is None:
+        return None
+    if pattern in DEDUCE_GUESS_PATTERNS:
+        return f"{pattern}_{classify_deduce_guess(prompt, pattern)}"
+    return pattern
+
+
+def write_dataset_with_category(input_csv: Path, output_csv: Path) -> dict[str, object]:
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    category_counts: Counter[str] = Counter()
+    first_line_counts: Counter[str] = Counter()
+    unmatched_rows: list[dict[str, str]] = []
+    total_rows = 0
+
+    with input_csv.open("r", encoding="utf-8", newline="") as src:
+        reader = csv.DictReader(src)
+        fieldnames = reader.fieldnames
+        if fieldnames is None:
+            raise ValueError(f"No header found in {input_csv}")
+        if "prompt" not in fieldnames:
+            raise ValueError(f"No prompt column found in {input_csv}")
+
+        output_fieldnames = list(fieldnames)
+        if "category" not in output_fieldnames:
+            output_fieldnames.append("category")
+
+        with output_csv.open("w", encoding="utf-8", newline="") as dst:
+            writer = csv.DictWriter(dst, fieldnames=output_fieldnames)
+            writer.writeheader()
+
+            for row in reader:
+                total_rows += 1
+                prompt = row["prompt"]
+                category = classify_category(prompt)
+                if category is None:
+                    category = "unmatched"
+                    unmatched_rows.append(
+                        {
+                            "id": row.get("id", ""),
+                            "prompt_first_line": first_line(prompt),
+                        }
+                    )
+
+                row = dict(row)
+                row["category"] = category
+                writer.writerow({name: row.get(name, "") for name in output_fieldnames})
+
+                category_counts[category] += 1
+                first_line_counts[first_line(prompt)] += 1
+
+    return {
+        "input_file": str(input_csv),
+        "output_file": str(output_csv),
+        "total_rows": total_rows,
+        "category_counts": dict(sorted(category_counts.items())),
+        "prompt_first_line_counts": dict(first_line_counts),
+        "unmatched_count": len(unmatched_rows),
+        "unmatched_ids": [row["id"] for row in unmatched_rows],
+        "unmatched_rows": unmatched_rows,
+    }
+
+
 def split_dataset(input_csv: Path, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -155,8 +223,6 @@ def split_dataset(input_csv: Path, output_dir: Path) -> None:
     output_fieldnames = list(fieldnames) + ["pattern"]
     summary = []
 
-    _DEDUCE_GUESS_PATTERNS = {"numeric_equation", "cryptarithm"}
-
     for label, description, _ in RULES:
         rows = rows_by_pattern.get(label, [])
         pattern_dir = output_dir / label
@@ -176,7 +242,7 @@ def split_dataset(input_csv: Path, output_dir: Path) -> None:
             }
         )
 
-        if label in _DEDUCE_GUESS_PATTERNS:
+        if label in DEDUCE_GUESS_PATTERNS:
             for subcat in ("deduce", "guess"):
                 subcat_rows = [
                     r for r in rows
@@ -216,27 +282,84 @@ def split_dataset(input_csv: Path, output_dir: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Split NVIDIA Nemotron train.csv into files by prompt pattern."
+        description=(
+            "Add detailed pattern category labels to NVIDIA Nemotron train/test CSVs."
+        )
+    )
+    parser.add_argument(
+        "--train-input",
+        type=Path,
+        default=Path("data/train.csv"),
+        help="Path to the source train CSV file.",
     )
     parser.add_argument(
         "--input",
+        dest="train_input",
         type=Path,
-        default=Path("data/train.csv"),
-        help="Path to the source CSV file.",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--test-input",
+        type=Path,
+        default=Path("data/test.csv"),
+        help="Path to the source test CSV file.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("data/patterns"),
-        help="Directory where the split CSV files will be written.",
+        help="Directory where train_pattern.csv and test_pattern.csv will be written.",
+    )
+    parser.add_argument(
+        "--train-output",
+        type=Path,
+        default=None,
+        help="Path to the output train CSV. Defaults to OUTPUT_DIR/train_pattern.csv.",
+    )
+    parser.add_argument(
+        "--test-output",
+        type=Path,
+        default=None,
+        help="Path to the output test CSV. Defaults to OUTPUT_DIR/test_pattern.csv.",
+    )
+    parser.add_argument(
+        "--legacy-split",
+        action="store_true",
+        help=(
+            "Also write the old train-only pattern directory split under OUTPUT_DIR. "
+            "This preserves the previous rows.csv layout for report generation."
+        ),
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    split_dataset(args.input, args.output_dir)
-    print(f"Saved split files to {args.output_dir}")
+    train_output = args.train_output or args.output_dir / "train_pattern.csv"
+    test_output = args.test_output or args.output_dir / "test_pattern.csv"
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    summaries = [
+        write_dataset_with_category(args.train_input, train_output),
+        write_dataset_with_category(args.test_input, test_output),
+    ]
+
+    summary_path = args.output_dir / "category_summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "outputs": summaries,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    if args.legacy_split:
+        split_dataset(args.train_input, args.output_dir)
+
+    print(f"Saved categorized CSV files to {args.output_dir}")
 
 
 if __name__ == "__main__":

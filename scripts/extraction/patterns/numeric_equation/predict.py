@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from .constants import _ARITH_OPS, _REVERSAL_MODE_NAMES
 from .matching import (
+    _is_valid_mode,
+    _normalize_arith_operands,
     _op_group_abs_num_rev_op,
     _op_group_abs_rev_op_suffix,
-    _op_group_operation,
+    _op_group_operations,
 )
 
 
@@ -24,10 +26,19 @@ def _predict(
     連結系は先頭候補のみ返す（swap で両方試す前提）。
     計算できない場合は None。
     """
-    a_s = a_str[::-1] if rev_in else a_str
-    b_s = b_str[::-1] if rev_in else b_str
-    if swap:
-        a_s, b_s = b_s, a_s
+    if not _is_valid_mode(rev_in, swap, out_mode):
+        return None
+
+    operands = _normalize_arith_operands(a_str, b_str, rev_in, swap)
+    if op_name not in {"concat", "concat_strip"}:
+        if operands is None:
+            return None
+        a_s, b_s = operands
+    else:
+        a_s = a_str[::-1] if rev_in else a_str
+        b_s = b_str[::-1] if rev_in else b_str
+        if swap:
+            a_s, b_s = b_s, a_s
 
     if op_name == "concat":
         concat = a_s + b_s
@@ -66,17 +77,22 @@ def _predict(
 
 def _all_modes_for_group(
     examples: list[tuple[str, str, str, str]],
+    allowed_modes: set[tuple[bool, bool, str]] | None = None,
 ) -> list[tuple[tuple[bool, bool, str], str, int]]:
     """例示に対して成立する全ての (mode, op_name, offset) を返す。
 
     _best_mode_for_group と同じ探索順（フェーズ1 → 1.5 → 2）で
     成立するものを全て収集する（最初の1件で止まらない）。
+    交換は入力反転後にのみ許可し、入力反転と出力反転（数値反転系/全反転）はセットになっている候補だけを扱う。
+    allowed_modes が指定された場合、その集合に含まれるモードのみ返す。
     重複は除外する。
     """
     seen: set[tuple] = set()
     results: list[tuple[tuple[bool, bool, str], str, int]] = []
 
     def _add(mode, op_name, offset):
+        if allowed_modes is not None and mode not in allowed_modes:
+            return
         key = (mode, op_name, offset)
         if key not in seen:
             seen.add(key)
@@ -85,27 +101,53 @@ def _all_modes_for_group(
     # フェーズ1: offset=0
     for mode in _REVERSAL_MODE_NAMES:
         rev_in, swap, out_mode = mode
-        result = _op_group_operation(examples, rev_in, swap, out_mode, allow_nonzero_offset=False)
-        if result is not None:
-            _add(mode, result[0], result[1])
+        for op_name, offset in _op_group_operations(
+            examples, rev_in, swap, out_mode, allow_nonzero_offset=False
+        ):
+            _add(mode, op_name, offset)
 
     # フェーズ1.5: 特殊出力パターン
     for rev_in in (False, True):
         for swap in (False, True):
             for op_name, fn in _ARITH_OPS:
+                if not _is_valid_mode(rev_in, swap, "num_rev"):
+                    continue
                 if _op_group_abs_num_rev_op(examples, fn, rev_in, swap):
                     _add((rev_in, swap, "num_rev"), op_name, 0)
     for rev_in in (False, True):
         for swap in (False, True):
             for op_name, fn in _ARITH_OPS:
+                if not _is_valid_mode(rev_in, swap, "num_rev_sfx"):
+                    continue
                 if _op_group_abs_rev_op_suffix(examples, fn, rev_in, swap):
                     _add((rev_in, swap, "num_rev_sfx"), op_name, 0)
 
     # フェーズ2: offset ±1
     for mode in _REVERSAL_MODE_NAMES:
         rev_in, swap, out_mode = mode
-        result = _op_group_operation(examples, rev_in, swap, out_mode, allow_nonzero_offset=True)
-        if result is not None:
-            _add(mode, result[0], result[1])
+        for op_name, offset in _op_group_operations(
+            examples, rev_in, swap, out_mode, allow_nonzero_offset=True
+        ):
+            _add(mode, op_name, offset)
 
     return results
+
+
+def _consistent_mode_set(
+    op_groups: dict[str, list[tuple[str, str, str, str]]],
+) -> set[tuple[bool, bool, str]]:
+    """全演算子グループで共通して成立するモード（rev_in, swap, out_mode）の集合を返す。
+
+    各グループの有効モード集合を求め、その積集合を返す。
+    空の場合は全グループで共通するモードが存在しないことを意味する。
+    """
+    if not op_groups:
+        return set()
+    mode_sets = [
+        {mode for mode, _, _ in _all_modes_for_group(examples)}
+        for examples in op_groups.values()
+    ]
+    result = mode_sets[0]
+    for s in mode_sets[1:]:
+        result &= s
+    return result

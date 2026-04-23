@@ -35,3 +35,11 @@ def _flow_label(op_name: str, offset: int, rev_in: bool, swap: bool, out_mode: s
     elif out_mode == "full_rev":
         parts.append("全反転")
     return " → ".join(parts)
+
+
+def _flow_sort_key(flow: str) -> tuple[int, int, int, str]:
+    """別解表示用のフロー優先順位を返す。"""
+    arrow_count = flow.count("→")
+    parenthetical_count = flow.count("（")
+    full_reverse_last = 1 if flow.endswith("全反転") else 0
+    return (arrow_count, parenthetical_count, full_reverse_last, flow)
