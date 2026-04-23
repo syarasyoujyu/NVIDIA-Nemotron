@@ -24,7 +24,6 @@ patterns-reports:
 extend-data-from-problems:
 	$(UV) scripts/gen_data/gen_problems.py
 	$(UV) scripts/gen_data/gen_reasoning.py
-	$(UV) scripts/cot_prompt/check_cot.py
 	$(UV) scripts/gen_data/gen_corpus.py
 extend-data-from-results:
 	$(UV) scripts/gen_data/gen_result.py
