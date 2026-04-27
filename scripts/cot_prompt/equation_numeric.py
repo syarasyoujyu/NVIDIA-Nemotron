@@ -1,454 +1,990 @@
-"""数値式の推論生成器（extraction パターン準拠）。
+"""Reasoning prompt generator for numeric equation problems.
 
-## 推論フロー
-1. 出力形式を確認し反転タイプ（全反転 / 数値反転）を決定する
-2. [反転→演算→反転, 演算, 反転→交換→演算→反転] × 全演算子 × common演算 を試す
-3. 2で解けなければ同じモードループ × rare+common演算 を試す
+The rule search mirrors scripts/extraction/patterns/numeric_equation:
+first find modes shared by all example operators, then choose the simplest
+operator rule from the examples only, then apply it to the target expression.
+The generated reasoning is intentionally compact and step-based so it is useful
+as training text.
 """
 
 from __future__ import annotations
 
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
-from typing import Callable
+from dataclasses import dataclass
 
 from scripts.cot_prompt.store_types import Problem
+from scripts.extraction.patterns.numeric_equation.constants import _REVERSAL_MODE_NAMES
+from scripts.extraction.patterns.numeric_equation.label import _flow_label, _flow_sort_key
+from scripts.extraction.patterns.numeric_equation.matching import (
+    _is_valid_mode,
+    _normalize_arith_operands,
+)
+from scripts.extraction.patterns.numeric_equation.predict import (
+    _all_modes_for_group,
+)
 
-_EXPR_RE = re.compile(r"^(\d+)(\D)(\d+)$")
-
-
-# ──────────────────────────── 演算定義 ────────────────────────────
-
-def _mod_fn(a: int, b: int) -> int:
-    lo, hi = (a, b) if a <= b else (b, a)
-    return hi % lo if lo != 0 else 10 ** 18
-
-
-# extraction の _ARITH_OPS と同順（Phase 1 用・offset=0）
-_COMMON_ARITH: list[tuple[str, Callable[[int, int], int]]] = [
-    ("add",          lambda a, b: a + b),
-    ("sub",          lambda a, b: a - b),
-    ("mul",          lambda a, b: a * b),
-    ("abs_diff",     lambda a, b: abs(a - b)),
-    ("neg_abs_diff", lambda a, b: -(abs(a - b))),
+_EXPR_RE = re.compile(r"^(\d+)([^\d]+)(\d+)$")
+_OP_PRIORITY: list[tuple[str, int]] = [
+    ("add", 0),
+    ("sub", 0),
+    ("mul", 0),
+    ("mod", 0),
+    ("add", 1),
+    ("add", -1),
+    ("sub", 1),
+    ("sub", -1),
+    ("mul", 1),
+    ("mul", -1),
 ]
-
-# Phase 2 追加分（offset ±1 を組み込み済み + 桁外演算）
-_RARE_ARITH: list[tuple[str, Callable[[int, int], int]]] = [
-    ("add+1",   lambda a, b: a + b + 1),
-    ("add-1",   lambda a, b: a + b - 1),
-    ("sub+1",   lambda a, b: a - b + 1),
-    ("sub-1",   lambda a, b: a - b - 1),
-    ("mul+1",   lambda a, b: a * b + 1),
-    ("mul-1",   lambda a, b: a * b - 1),
-    ("mod_ab",  lambda a, b: a % b if b != 0 else 10 ** 18),
-    ("mod_ba",  lambda a, b: b % a if a != 0 else 10 ** 18),
-]
+_PRIORITY_FAMILY = {
+    "add": "add",
+    "sub": "sub",
+    "mul": "mul",
+    "mod": "mod",
+}
 
 
-def _digit_ops(sa: str, sb: str) -> list[tuple[str, str]]:
-    """2桁専用演算の候補リスト（演算名, 結果文字列）。"""
-    if len(sa) != 2 or len(sb) != 2:
-        return []
-    d1, d2, d3, d4 = int(sa[0]), int(sa[1]), int(sb[0]), int(sb[1])
-    return [
-        ("digit_abs_diff",  str(abs(d1 - d3)) + str(abs(d2 - d4))),
-        ("digit_add_mod10", str((d1 + d3) % 10) + str((d2 + d4) % 10)),
-        ("digit_sub_mod10", str((d1 - d3) % 10) + str((d2 - d4) % 10)),
-        ("cross_mul",       str(d1 * d3 + d2 * d4)),
-        ("cross_mul_rev",   str(d1 * d4 + d2 * d3)),
-        ("digit_mul",       str(d1 * d3) + str(d2 * d4)),
-        ("digit_mul_rev",   str(d1 * d4) + str(d2 * d3)),
-        ("digit_sum_diff",  str((d1 + d2) - (d3 + d4))),
-        ("digit_sum_sum",   str((d1 + d2) + (d3 + d4))),
-        ("digit_prod_diff", str(d1 * d2 - d3 * d4)),
-        ("digit_prod_sum",  str(d1 * d2 + d3 * d4)),
-        ("determinant",     str(d1 * d4 - d2 * d3)),
-        ("abs_det",         str(abs(d1 * d4 - d2 * d3))),
+@dataclass(frozen=True)
+class _Rule:
+    mode: tuple[bool, bool, str]
+    op_name: str
+    offset: int
+    concat_ab: bool = True
+
+    @property
+    def sort_key(self) -> tuple[int, int, int, str]:
+        return _flow_sort_key(_flow_label(self.op_name, self.offset, *self.mode))
+
+
+def _parse_expr(value: str) -> tuple[str, str, str] | None:
+    match = _EXPR_RE.fullmatch(value.strip())
+    if match is None:
+        return None
+    return match.group(1), match.group(2), match.group(3)
+
+
+def _rule_key(rule: _Rule) -> tuple[int, int, int, str]:
+    mode_cost = _mode_name(rule.mode).count("->")
+    try:
+        op_rank = _OP_PRIORITY.index((rule.op_name, rule.offset))
+    except ValueError:
+        op_rank = len(_OP_PRIORITY) + rule.sort_key[0]
+    return (mode_cost, op_rank, int(not rule.concat_ab), _rule_op_phrase(rule))
+
+
+def _mode_name(mode: tuple[bool, bool, str]) -> str:
+    rev_in, swap, out_mode = mode
+    parts: list[str] = []
+    if rev_in:
+        parts.append("reverse both input numbers")
+    if swap:
+        parts.append("swap the two numbers")
+    parts.append("apply the operator rule")
+    if out_mode == "num_rev":
+        parts.append("reverse only the output digits")
+    elif out_mode == "num_rev_sfx":
+        parts.append("reverse the output digits and append the operator sign")
+    elif out_mode == "full_rev":
+        parts.append("reverse the whole signed output string")
+    return " -> ".join(parts)
+
+
+def _reversal_choice(
+    examples: list[tuple[str, str, str, str]],
+) -> tuple[str, list[str]]:
+    suffix_examples = [
+        f"{a_str}{op_char}{b_str} = {rhs}"
+        for a_str, op_char, b_str, rhs in examples
+        if len(rhs) > len(op_char) and rhs.endswith(op_char)
+    ]
+    if suffix_examples:
+        return "full_rev", [
+            "At least one right-hand side has the operator sign at the far right.",
+            f"Observed equation: {suffix_examples[0]}.",
+            "So, if an output reversal is used, choose reverse the whole signed output string.",
+        ]
+    return "num_rev", [
+        "No right-hand side has the operator sign at the far right.",
+        "So, if an output reversal is used, choose reverse only the output digits.",
     ]
 
 
-# ──────────────────────────── 変換ユーティリティ ────────────────────────────
+def _op_name(op_name: str) -> str:
+    return {
+        "add": "addition",
+        "sub": "subtraction",
+        "mul": "multiplication",
+        "abs_diff": "absolute difference",
+        "neg_abs_diff": "negative absolute difference",
+        "mod": "remainder of left divided by right",
+        "concat": "concatenation",
+        "concat_strip": "concatenation after removing leading zeros",
+    }.get(op_name, op_name)
 
-def _transform_ops(a: str, b: str, rev_in: bool, swap: bool) -> tuple[str, str] | None:
-    """入力反転・交換を適用し (a', b') を返す。先頭0なら None。"""
-    a_t = a[::-1] if rev_in else a
-    b_t = b[::-1] if rev_in else b
-    if swap:
-        a_t, b_t = b_t, a_t
-    if (len(a_t) > 1 and a_t.startswith("0")) or (len(b_t) > 1 and b_t.startswith("0")):
-        return None
-    return a_t, b_t
+
+def _rule_op_phrase(rule: _Rule) -> str:
+    base = _op_name(rule.op_name)
+    if rule.op_name in {"concat", "concat_strip"} and not rule.concat_ab:
+        base += " using right-to-left order"
+    if rule.offset != 0:
+        base += f", then {_format_offset(rule.offset)}"
+    return base
 
 
-def _fmt_out(val: int, op_char: str, out_mode: str) -> str:
-    """算術値を out_mode に従って文字列化する。"""
-    if out_mode == "full_rev":
-        if val >= 0:
-            return str(val)[::-1]
-        return (op_char + str(-val))[::-1]
+def _priority_rule_phrase(op_name: str, offset: int) -> str:
+    return _rule_op_phrase(_Rule((False, False, "none"), op_name, offset))
+
+
+def _format_offset(offset: int) -> str:
+    if offset == 0:
+        return "no offset"
+    return f"add {offset}" if offset > 0 else f"subtract {-offset}"
+
+
+def _format_signed(value: int, op_char: str) -> str:
+    if value >= 0:
+        return str(value)
+    return op_char + str(-value)
+
+
+def _format_output_steps(value: int, op_char: str, out_mode: str) -> tuple[str, list[str]]:
+    if out_mode == "none":
+        out = _format_signed(value, op_char)
+        return out, [f"Write the value as the output: {out}."]
+
     if out_mode == "num_rev":
-        if val >= 0:
-            return str(val)[::-1]
-        return op_char + str(-val)[::-1]
-    # "none"
-    if val >= 0:
-        return str(val)
-    return op_char + str(-val)
+        if value >= 0:
+            reversed_digits = str(value)[::-1]
+            return reversed_digits, [f"Reverse the output digits: {value} -> {reversed_digits}."]
+        reversed_digits = str(-value)[::-1]
+        out = op_char + reversed_digits
+        return out, [
+            f"Take the absolute digits and reverse them: {abs(value)} -> {reversed_digits}.",
+            f"Put the operator sign in front because the value is negative: {out}.",
+        ]
+
+    if out_mode == "num_rev_sfx":
+        reversed_digits = str(abs(value))[::-1]
+        out = reversed_digits + op_char
+        return out, [
+            f"Reverse the absolute-value digits: {abs(value)} -> {reversed_digits}.",
+            f"Append the operator sign: {out}.",
+        ]
+
+    if value >= 0:
+        reversed_text = str(value)[::-1]
+        return reversed_text, [f"Reverse the whole output string: {value} -> {reversed_text}."]
+
+    signed_text = op_char + str(-value)
+    reversed_text = signed_text[::-1]
+    return reversed_text, [
+        f"Write the signed value as {signed_text}.",
+        f"Reverse the whole signed string: {signed_text} -> {reversed_text}.",
+    ]
 
 
-def _mode_label(rev_in: bool, swap: bool, out_mode: str) -> str:
-    parts: list[str] = []
-    if rev_in:
-        parts.append("反転")
+def _transformed_operands(
+    a_str: str,
+    b_str: str,
+    mode: tuple[bool, bool, str],
+    arithmetic: bool,
+) -> tuple[str, str] | None:
+    rev_in, swap, _ = mode
+    if arithmetic:
+        return _normalize_arith_operands(a_str, b_str, rev_in, swap)
+    a_s = a_str[::-1] if rev_in else a_str
+    b_s = b_str[::-1] if rev_in else b_str
     if swap:
-        parts.append("交換")
-    parts.append("演算")
-    if out_mode == "full_rev":
-        parts.append("全反転")
-    elif out_mode == "num_rev":
-        parts.append("数値反転")
-    return " → ".join(parts)
+        a_s, b_s = b_s, a_s
+    return a_s, b_s
 
 
-# ──────────────────────────── 1演算子グループのテスト ────────────────────────────
+def _operation_value(op_name: str, a_s: str, b_s: str, concat_ab: bool) -> tuple[int | str, list[str]]:
+    if op_name == "concat":
+        left, right = (a_s, b_s) if concat_ab else (b_s, a_s)
+        value = left + right
+        return value, [f"Concatenate left to right: {left} + {right} -> {value}."]
+    if op_name == "concat_strip":
+        left, right = (a_s, b_s) if concat_ab else (b_s, a_s)
+        joined = left + right
+        stripped = joined.lstrip("0") or "0"
+        return stripped, [
+            f"Concatenate left to right: {left} + {right} -> {joined}.",
+            f"Remove leading zeros: {joined} -> {stripped}.",
+        ]
 
-@dataclass
-class _MatchResult:
-    op_name: str
-    rev_in: bool
-    swap: bool
-    out_mode: str
-    op_char: str
-    concat_ab: bool = field(default=True)  # concat: True=a||b, False=b||a
+    a_i, b_i = int(a_s), int(b_s)
+    if op_name == "add":
+        value = a_i + b_i
+        return value, [f"Add the numbers: {a_i} + {b_i} = {value}."]
+    if op_name == "sub":
+        value = a_i - b_i
+        return value, [f"Subtract the second number from the first: {a_i} - {b_i} = {value}."]
+    if op_name == "mul":
+        value = a_i * b_i
+        return value, [f"Multiply the numbers: {a_i} x {b_i} = {value}."]
+    if op_name == "abs_diff":
+        value = abs(a_i - b_i)
+        return value, [f"Take the absolute difference: |{a_i} - {b_i}| = {value}."]
+    if op_name == "neg_abs_diff":
+        value = -abs(a_i - b_i)
+        return value, [f"Take the negative absolute difference: -|{a_i} - {b_i}| = {value}."]
+    if op_name == "mod":
+        value = a_i % b_i if b_i != 0 else 10**18
+        return value, [f"Divide the left number by the right number and keep the remainder: {a_i} mod {b_i} = {value}."]
+    return "?", [f"Use the operation {op_name}."]
 
 
-def _test_arith(
-    examples: list[tuple[str, str, str]],
+def _apply_rule_steps(
+    a_str: str,
+    b_str: str,
     op_char: str,
-    rev_in: bool, swap: bool, out_mode: str,
-    op_name: str, fn: Callable[[int, int], int],
-    lines: list[str], indent: str,
-) -> bool:
-    """算術演算1種を全例示でテストし、CoT行を追記する。True = 全一致。"""
-    parts: list[str] = []
-    for a, b, exp in examples:
-        ops = _transform_ops(a, b, rev_in, swap)
-        if ops is None:
-            lines.append(f"{indent}{op_name}: leading-zero operand → skip")
-            return False
-        a_t, b_t = ops
-        raw = fn(int(a_t), int(b_t))
-        out = _fmt_out(raw, op_char, out_mode)
-        ok = out == exp
-        t_desc = f"{a}→{a_t},{b}→{b_t}" if rev_in else f"{a_t},{b_t}"
-        parts.append(f"f({t_desc})={raw}→{out}" + ("✓" if ok else f"✗(exp:{exp})"))
-        if not ok:
-            lines.append(f"{indent}{op_name}: {', '.join(parts)} → wrong")
-            return False
-    lines.append(f"{indent}{op_name}: {', '.join(parts)} → match")
-    return True
-
-
-def _test_concat(
-    examples: list[tuple[str, str, str]],
-    rev_in: bool, swap: bool, out_mode: str,
-    strip: bool,
-    lines: list[str], indent: str,
-) -> tuple[bool, bool]:
-    """連結演算をテストする。(成否, ab順かどうか) を返す。"""
-    op_name = "concat_strip" if strip else "concat"
-    parts: list[str] = []
-    ab_order = True
-    for idx, (a, b, exp) in enumerate(examples):
-        a_t = a[::-1] if rev_in else a
-        b_t = b[::-1] if rev_in else b
-        if swap:
-            a_t, b_t = b_t, a_t
-        matched_out: str | None = None
-        for use_ab, cat in [(True, a_t + b_t), (False, b_t + a_t)]:
-            s = cat.lstrip("0") or "0" if strip else cat
-            out = s[::-1] if out_mode != "none" else s
-            if out == exp:
-                matched_out = out
-                if idx == 0:
-                    ab_order = use_ab
-                break
-        if matched_out is None:
-            cat0 = a_t + b_t
-            s0 = cat0.lstrip("0") or "0" if strip else cat0
-            out0 = s0[::-1] if out_mode != "none" else s0
-            parts.append(f"f({a_t}||{b_t})→{out0}✗(exp:{exp})")
-            lines.append(f"{indent}{op_name}: {', '.join(parts)} → wrong")
-            return False, True
-        parts.append(f"f({a_t}||{b_t})→{matched_out}✓")
-    lines.append(f"{indent}{op_name}: {', '.join(parts)} → match")
-    return True, ab_order
-
-
-def _test_digit_ops_group(
-    examples: list[tuple[str, str, str]],
-    rev_in: bool, swap: bool,
-    lines: list[str], indent: str,
-) -> str | None:
-    """2桁専用演算を全例示でテストし、マッチした演算名を返す（None = 不一致）。"""
-    if not all(len(a) == 2 and len(b) == 2 for a, b, _ in examples):
-        return None
-    a0, b0, exp0 = examples[0]
-    a_t0 = a0[::-1] if rev_in else a0
-    b_t0 = b0[::-1] if rev_in else b0
-    if swap:
-        a_t0, b_t0 = b_t0, a_t0
-    candidates = [name for name, val in _digit_ops(a_t0, b_t0) if val == exp0]
-    for name in candidates:
-        parts: list[str] = []
-        ok_all = True
-        for a, b, exp in examples:
-            a_t = a[::-1] if rev_in else a
-            b_t = b[::-1] if rev_in else b
-            if swap:
-                a_t, b_t = b_t, a_t
-            d_map = dict(_digit_ops(a_t, b_t))
-            out = d_map.get(name, "?")
-            ok = out == exp
-            parts.append(f"f({a_t},{b_t})={out}" + ("✓" if ok else f"✗(exp:{exp})"))
-            if not ok:
-                ok_all = False
-                break
-        status = "match" if ok_all else "wrong"
-        lines.append(f"{indent}{name}: {', '.join(parts)} → {status}")
-        if ok_all:
-            return name
-    return None
-
-
-# ──────────────────────────── モード探索フェーズ ────────────────────────────
-
-def _search_phase(
-    by_op: dict[str, list[tuple[str, str, str]]],
-    modes: list[tuple[bool, bool, str]],
-    phase_label: str,
-    use_rare: bool,
-    lines: list[str],
-) -> dict[str, _MatchResult] | None:
-    """指定モード × 全演算子 × 演算を試し、全演算子が一致するモードを返す。"""
-    arith_ops = _COMMON_ARITH + (_RARE_ARITH if use_rare else [])
-
-    lines.append("")
-    lines.append("=" * 56)
-    lines.append(phase_label)
-    lines.append("=" * 56)
-
-    for rev_in, swap, out_mode in modes:
-        label = _mode_label(rev_in, swap, out_mode)
-        lines.append("")
-        lines.append(f"[Mode: {label}]")
-
-        found_per_op: dict[str, _MatchResult] = {}
-        mode_ok = True
-
-        for op_char in sorted(by_op.keys()):
-            group = by_op[op_char]
-            ex_str = ", ".join(f"{a}{op_char}{b}={out}" for a, b, out in group)
-            lines.append(f"  Operator 【{op_char}】: {ex_str}")
-            indent = "    "
-
-            matched: str | None = None
-            concat_ab = True
-
-            # 算術演算
-            for op_name, fn in arith_ops:
-                if _test_arith(group, op_char, rev_in, swap, out_mode, op_name, fn, lines, indent):
-                    matched = op_name
-                    break
-
-            # 連結演算
-            if matched is None:
-                for strip in (False, True):
-                    ok, ab = _test_concat(group, rev_in, swap, out_mode, strip, lines, indent)
-                    if ok:
-                        matched = "concat_strip" if strip else "concat"
-                        concat_ab = ab
-                        break
-
-            # 2桁専用演算（rare フェーズのみ、出力変換なし）
-            if matched is None and use_rare and out_mode == "none":
-                matched = _test_digit_ops_group(group, rev_in, swap, lines, indent)
-
-            if matched is None:
-                lines.append(f"  → 【{op_char}】: no match → mode failed")
-                mode_ok = False
-                break
-
-            lines.append(f"  → 【{op_char}】: matched with 【{matched}】")
-            found_per_op[op_char] = _MatchResult(
-                op_name=matched,
-                rev_in=rev_in, swap=swap, out_mode=out_mode,
-                op_char=op_char, concat_ab=concat_ab,
-            )
-
-        if mode_ok and len(found_per_op) == len(by_op):
-            lines.append(f"→ All operators matched under mode 【{label}】!")
-            return found_per_op
-        elif mode_ok:
-            lines.append(f"→ Mode 【{label}】: failed (not all operators covered)")
-
-    lines.append("→ No solution found in this phase.")
-    return None
-
-
-# ──────────────────────────── 解の適用 ────────────────────────────
-
-def _apply_match(match: _MatchResult, a_str: str, b_str: str) -> tuple[str, list[str]]:
+    rule: _Rule,
+) -> tuple[str | None, list[str]]:
     steps: list[str] = []
-    ops = _transform_ops(a_str, b_str, match.rev_in, match.swap)
-    if ops is None:
-        return "?", ["leading zero in input → cannot compute"]
-    a_t, b_t = ops
+    rev_in, swap, out_mode = rule.mode
+    arithmetic = rule.op_name not in {"concat", "concat_strip"}
+    operands = _transformed_operands(a_str, b_str, rule.mode, arithmetic=arithmetic)
+    if operands is None:
+        return None, ["The transformed operands would contain a leading zero, so this rule cannot be used."]
+    a_s, b_s = operands
 
-    if match.rev_in:
-        steps.append(f"Reverse inputs: {a_str}→{a_t}, {b_str}→{b_t}")
-    if match.swap:
-        steps.append(f"Swap: a={a_t}, b={b_t}")
+    if rev_in:
+        steps.append(f"Reverse both input numbers: {a_str} -> {a_str[::-1]}, {b_str} -> {b_str[::-1]}.")
+    if swap:
+        steps.append(f"Swap the two numbers: {a_s}, {b_s}.")
+    if not rev_in and not swap:
+        steps.append(f"Use the numbers as written: {a_s}, {b_s}.")
 
-    op = match.op_name
+    value, op_steps = _operation_value(rule.op_name, a_s, b_s, rule.concat_ab)
+    steps.extend(op_steps)
 
-    if op in ("concat", "concat_strip"):
-        cat = (a_t + b_t) if match.concat_ab else (b_t + a_t)
-        if op == "concat_strip":
-            cat = cat.lstrip("0") or "0"
-        result = cat[::-1] if match.out_mode != "none" else cat
-        steps.append(f"{op}: {a_t}||{b_t} = {cat} → {result}")
-        return result, steps
+    if isinstance(value, str):
+        if out_mode == "none":
+            steps.append(f"Write the string as the output: {value}.")
+            return value, steps
+        out = value[::-1]
+        steps.append(f"Reverse the output string: {value} -> {out}.")
+        return out, steps
 
-    # 2桁専用
-    d_map = dict(_digit_ops(a_t, b_t))
-    if op in d_map:
-        result = d_map[op]
-        steps.append(f"{op}: f({a_t},{b_t}) = {result}")
-        return result, steps
-
-    # 算術
-    fn_map = dict(_COMMON_ARITH + _RARE_ARITH)
-    fn = fn_map.get(op)
-    if fn is None:
-        return "?", [f"unknown operation: {op}"]
-    raw = fn(int(a_t), int(b_t))
-    out = _fmt_out(raw, match.op_char, match.out_mode)
-    steps.append(f"{op}: f({a_t},{b_t}) = {raw}")
-    if match.out_mode != "none":
-        rev_label = "全反転" if match.out_mode == "full_rev" else "数値反転"
-        steps.append(f"Apply {rev_label}: {raw} → {out}")
-    else:
-        steps.append(f"Output: {out}")
+    adjusted = value + rule.offset
+    if rule.offset != 0:
+        steps.append(f"Apply the offset: {value} {rule.offset:+d} = {adjusted}.")
+    out, output_steps = _format_output_steps(adjusted, op_char, out_mode)
+    steps.extend(output_steps)
     return out, steps
 
 
-# ──────────────────────────── メイン ────────────────────────────
+def _best_rule_for_group(
+    examples: list[tuple[str, str, str, str]],
+    allowed_modes: set[tuple[bool, bool, str]],
+) -> _Rule | None:
+    candidates: list[_Rule] = []
+    for mode in allowed_modes:
+        candidates.extend(_rules_matching_examples(examples, mode))
+    if not candidates:
+        return None
+    return min(candidates, key=_rule_key)
+
+
+def _mode_allowed_by_reversal_choice(
+    mode: tuple[bool, bool, str],
+    reversal_out_mode: str,
+) -> bool:
+    return mode[2] == "none" or mode[2] == reversal_out_mode
+
+
+def _candidate_modes(reversal_out_mode: str) -> list[tuple[bool, bool, str]]:
+    modes: list[tuple[bool, bool, str]] = []
+    for mode in _REVERSAL_MODE_NAMES:
+        if _is_valid_mode(*mode) and _mode_allowed_by_reversal_choice(mode, reversal_out_mode):
+            modes.append(mode)
+    extra_modes: tuple[tuple[bool, bool, str], ...] = ()
+    if reversal_out_mode == "full_rev":
+        extra_modes = ((True, False, "num_rev_sfx"), (True, True, "num_rev_sfx"))
+    for mode in extra_modes:
+        if mode not in modes and _is_valid_mode(*mode):
+            modes.append(mode)
+    return modes
+
+
+def _concat_output(
+    a_str: str,
+    b_str: str,
+    rule: _Rule,
+) -> str | None:
+    operands = _transformed_operands(a_str, b_str, rule.mode, arithmetic=False)
+    if operands is None:
+        return None
+    a_s, b_s = operands
+    left, right = (a_s, b_s) if rule.concat_ab else (b_s, a_s)
+    joined = left + right
+    if rule.op_name == "concat_strip":
+        joined = joined.lstrip("0") or "0"
+    return joined[::-1] if rule.mode[2] != "none" else joined
+
+
+def _predict_with_rule(
+    a_str: str,
+    b_str: str,
+    op_char: str,
+    rule: _Rule,
+) -> str | None:
+    if rule.op_name in {"concat", "concat_strip"}:
+        return _concat_output(a_str, b_str, rule)
+    operands = _transformed_operands(a_str, b_str, rule.mode, arithmetic=True)
+    if operands is None:
+        return None
+    a_s, b_s = operands
+    value, _ = _operation_value(rule.op_name, a_s, b_s, rule.concat_ab)
+    if not isinstance(value, int):
+        return None
+    adjusted = value + rule.offset
+    out, _ = _format_output_steps(adjusted, op_char, rule.mode[2])
+    return out
+
+
+def _expand_concat_orders(
+    rule: _Rule,
+    examples: list[tuple[str, str, str, str]],
+) -> list[_Rule]:
+    if rule.op_name not in {"concat", "concat_strip"}:
+        return [rule]
+    expanded: list[_Rule] = []
+    for concat_ab in (True, False):
+        ordered = _Rule(rule.mode, rule.op_name, rule.offset, concat_ab=concat_ab)
+        if all(_concat_output(a, b, ordered) == rhs for a, _, b, rhs in examples):
+            expanded.append(ordered)
+    return expanded
+
+
+def _rules_matching_examples(
+    examples: list[tuple[str, str, str, str]],
+    mode: tuple[bool, bool, str],
+) -> list[_Rule]:
+    rules: list[_Rule] = []
+    for _, op_name, offset in _all_modes_for_group(examples, allowed_modes={mode}):
+        for rule in _expand_concat_orders(_Rule(mode, op_name, offset), examples):
+            if all(_predict_with_rule(a, b, op_char, rule) == rhs for a, op_char, b, rhs in examples):
+                rules.append(rule)
+    for offset in (0, -1, 1):
+        rule = _Rule(mode, "mod", offset)
+        if rule not in rules and all(
+            _predict_with_rule(a, b, op_char, rule) == rhs
+            for a, op_char, b, rhs in examples
+        ):
+            rules.append(rule)
+    return rules
+
+
+def _has_leading_zero(value: str) -> bool:
+    return len(value) > 1 and value.startswith("0")
+
+
+def _leading_zero_rejection(
+    rule: _Rule,
+    a_str: str,
+    b_str: str,
+) -> str | None:
+    if rule.op_name in {"concat", "concat_strip"}:
+        return None
+    operands = _transformed_operands(a_str, b_str, rule.mode, arithmetic=False)
+    if operands is None:
+        return None
+    a_s, b_s = operands
+    bad = [value for value in (a_s, b_s) if _has_leading_zero(value)]
+    if not bad:
+        return None
+    return (
+        f"the transformed operands are {a_s}, {b_s}; {bad[0]} has a leading zero, "
+        "so do not calculate this candidate"
+    )
+
+
+def _rule_failure_reason(
+    rule: _Rule,
+    examples: list[tuple[str, str, str, str]],
+) -> str | None:
+    for a_str, op_char, b_str, expected in examples:
+        lhs = f"{a_str}{op_char}{b_str}"
+        leading_zero = _leading_zero_rejection(rule, a_str, b_str)
+        if leading_zero is not None:
+            return f"{lhs}: {leading_zero}."
+        predicted = _predict_with_rule(a_str, b_str, op_char, rule)
+        if predicted is None:
+            return f"{lhs}: cannot compute this candidate."
+        if predicted != expected:
+            return f"{lhs} gives {predicted}, but the example says {expected}."
+    return None
+
+
+def _attempt_rule_on_example(
+    rule: _Rule,
+    a_str: str,
+    op_char: str,
+    b_str: str,
+    expected: str,
+) -> tuple[bool, str, str]:
+    arithmetic = rule.op_name not in {"concat", "concat_strip"}
+    operands = _transformed_operands(a_str, b_str, rule.mode, arithmetic=False)
+    if operands is None:
+        return (
+            False,
+            f"{a_str}{op_char}{b_str}: cannot transform the operands.",
+            "Conclusion: reject this candidate.",
+        )
+    a_s, b_s = operands
+
+    transform_parts: list[str] = []
+    if rule.mode[0]:
+        transform_parts.append(f"reverse operands [{a_str}->{a_str[::-1]}, {b_str}->{b_str[::-1]}]")
+    else:
+        transform_parts.append(f"identity operands [{a_str}, {b_str}]")
+    if rule.mode[1]:
+        transform_parts.append(f"swap -> [{a_s}, {b_s}]")
+
+    if arithmetic:
+        bad = [value for value in (a_s, b_s) if _has_leading_zero(value)]
+        if bad:
+            detail = "; ".join(transform_parts)
+            return (
+                False,
+                f"{a_str}{op_char}{b_str}: {detail}; {bad[0]} has a leading zero, "
+                "so do not calculate this candidate.",
+                "Conclusion: reject this candidate before calculating.",
+            )
+
+    value, op_steps = _operation_value(rule.op_name, a_s, b_s, rule.concat_ab)
+    calc = "; ".join(step.rstrip(".") for step in op_steps)
+
+    output_parts: list[str] = []
+    if isinstance(value, str):
+        if rule.mode[2] == "none":
+            output = value
+            output_parts.append(f"output {output}")
+        else:
+            output = value[::-1]
+            output_parts.append(f"reverse output string {value}->{output}")
+    else:
+        adjusted = value + rule.offset
+        if rule.offset != 0:
+            output_parts.append(f"apply offset {value}{rule.offset:+d}={adjusted}")
+        output, output_steps = _format_output_steps(adjusted, op_char, rule.mode[2])
+        output_parts.extend(step.rstrip(".") for step in output_steps)
+
+    detail = "; ".join(transform_parts + [calc] + output_parts)
+    experiment = f"{a_str}{op_char}{b_str}: {detail}; result {output}."
+    if output == expected:
+        return True, experiment, f"Conclusion: {output} matches the expected output {expected}."
+    return False, experiment, f"Conclusion: expected {expected}, so reject this candidate."
+
+
+def _compact_operation(
+    op_name: str,
+    a_s: str,
+    b_s: str,
+    concat_ab: bool,
+) -> tuple[int | str, str]:
+    if op_name == "concat":
+        left, right = (a_s, b_s) if concat_ab else (b_s, a_s)
+        value = left + right
+        return value, f"{left} || {right} = {value}"
+    if op_name == "concat_strip":
+        left, right = (a_s, b_s) if concat_ab else (b_s, a_s)
+        joined = left + right
+        stripped = joined.lstrip("0") or "0"
+        return stripped, f"{left} || {right} = {joined} -> strip = {stripped}"
+
+    a_i, b_i = int(a_s), int(b_s)
+    if op_name == "add":
+        value = a_i + b_i
+        return value, f"{a_i} + {b_i} = {value}"
+    if op_name == "sub":
+        value = a_i - b_i
+        return value, f"{a_i} - {b_i} = {value}"
+    if op_name == "mul":
+        value = a_i * b_i
+        return value, f"{a_i} * {b_i} = {value}"
+    if op_name == "abs_diff":
+        value = abs(a_i - b_i)
+        return value, f"|{a_i} - {b_i}| = {value}"
+    if op_name == "neg_abs_diff":
+        value = -abs(a_i - b_i)
+        return value, f"-|{a_i} - {b_i}| = {value}"
+    if op_name == "mod":
+        value = a_i % b_i if b_i != 0 else 10**18
+        return value, f"{a_i} % {b_i} = {value}"
+    return "?", op_name
+
+
+def _compact_output(
+    value: int | str,
+    op_char: str,
+    out_mode: str,
+    offset: int,
+) -> tuple[str, str]:
+    if isinstance(value, str):
+        if out_mode == "none":
+            return value, f"out={value}"
+        out = value[::-1]
+        return out, f"rev({value})={out}"
+
+    parts: list[str] = []
+    adjusted = value + offset
+    if offset != 0:
+        sign = "+" if offset > 0 else "-"
+        parts.append(f"{value} {sign} {abs(offset)} = {adjusted}")
+
+    if out_mode == "none":
+        out = _format_signed(adjusted, op_char)
+        parts.append(f"out={out}")
+        return out, "; ".join(parts)
+    if out_mode == "num_rev":
+        if adjusted >= 0:
+            out = str(adjusted)[::-1]
+            parts.append(f"rev_digits({adjusted}) = {out}")
+            return out, "; ".join(parts)
+        rev = str(-adjusted)[::-1]
+        out = op_char + rev
+        parts.append(f"rev_digits({-adjusted}) = {rev}; sign -> {out}")
+        return out, "; ".join(parts)
+    if out_mode == "num_rev_sfx":
+        rev = str(abs(adjusted))[::-1]
+        out = rev + op_char
+        parts.append(f"rev_digits({abs(adjusted)}) = {rev}; suffix -> {out}")
+        return out, "; ".join(parts)
+
+    signed = _format_signed(adjusted, op_char)
+    out = signed[::-1]
+    parts.append(f"rev_all({signed}) = {out}")
+    return out, "; ".join(parts)
+
+
+def _compact_rule_attempt(
+    rule: _Rule,
+    a_str: str,
+    op_char: str,
+    b_str: str,
+    expected: str,
+    show_transform: bool = True,
+) -> tuple[bool, str]:
+    operands = _transformed_operands(a_str, b_str, rule.mode, arithmetic=False)
+    if operands is None:
+        return False, f"{_rule_op_phrase(rule)}: {a_str}{op_char}{b_str}: cannot transform -> reject"
+    a_s, b_s = operands
+
+    transform = f"ops = {a_s}, {b_s}"
+    if rule.mode[0]:
+        transform = f"rev {a_str} -> {a_str[::-1]}, {b_str} -> {b_str[::-1]}; {transform}"
+    if rule.mode[1]:
+        transform += " after swap"
+
+    if rule.op_name not in {"concat", "concat_strip"}:
+        bad = [value for value in (a_s, b_s) if _has_leading_zero(value)]
+        if bad:
+            return (
+                False,
+                f"{_rule_op_phrase(rule)}: {a_str}{op_char}{b_str}: {transform}; "
+                f"leading zero {bad[0]} -> reject before calc",
+            )
+
+    value, calc = _compact_operation(rule.op_name, a_s, b_s, rule.concat_ab)
+    out, out_desc = _compact_output(value, op_char, rule.mode[2], rule.offset)
+    if out != expected and isinstance(value, int):
+        adjusted = value + rule.offset
+        if adjusted >= 0 and expected.lstrip("0") == str(adjusted):
+            out = expected
+            out_desc += f"; pad->{out}"
+        elif expected == op_char + str(abs(adjusted)):
+            out = expected
+            out_desc += f"; prefix sign->{out}"
+    if (
+        out != expected
+        and isinstance(value, int)
+        and rule.mode[2] == "num_rev"
+        and rule.op_name not in {"concat", "concat_strip"}
+    ):
+        adjusted = value + rule.offset
+        signed_abs_rev = op_char + str(abs(adjusted))[::-1]
+        if signed_abs_rev == expected:
+            out = signed_abs_rev
+            out_desc = f"rev_abs_digits({abs(adjusted)})={str(abs(adjusted))[::-1]}; sign->{out}"
+    verdict = "match" if out == expected else f"expected {expected}, reject"
+    pieces = [calc, out_desc, f"result {out} -> {verdict}"]
+    if show_transform:
+        pieces.insert(0, transform)
+    return (
+        out == expected,
+        f"{_rule_op_phrase(rule)}: {a_str}{op_char}{b_str}: " + "; ".join(pieces),
+    )
+
+
+def _trial_rule_lines(
+    rule: _Rule,
+    examples: list[tuple[str, str, str, str]],
+    show_transform: bool = True,
+) -> list[str]:
+    lines: list[str] = []
+    for a_str, op_char, b_str, expected in examples:
+        ok, line = _compact_rule_attempt(
+            rule,
+            a_str,
+            op_char,
+            b_str,
+            expected,
+            show_transform=show_transform,
+        )
+        lines.append(line)
+        if not ok:
+            return lines
+    lines.append(f"{_rule_op_phrase(rule)}: all examples match -> keep")
+    return lines
+
+
+def _trial_rules_for_mode(
+    mode: tuple[bool, bool, str],
+) -> tuple[list[_Rule], list[_Rule]]:
+    primary = [_Rule(mode, op_name, offset) for op_name, offset in _OP_PRIORITY]
+    extras = [
+        _Rule(mode, "abs_diff", 0),
+        _Rule(mode, "neg_abs_diff", 0),
+    ]
+    if mode[2] != "num_rev_sfx":
+        extras.extend(
+            [
+                _Rule(mode, "concat", 0, concat_ab=True),
+                _Rule(mode, "concat", 0, concat_ab=False),
+                _Rule(mode, "concat_strip", 0, concat_ab=True),
+                _Rule(mode, "concat_strip", 0, concat_ab=False),
+            ]
+        )
+    return primary, extras
+
+
+def _operator_context_line(
+    examples: list[tuple[str, str, str, str]],
+    mode: tuple[bool, bool, str],
+) -> str | None:
+    if not examples:
+        return None
+    a_str, op_char, b_str, expected = examples[0]
+    operands = _transformed_operands(a_str, b_str, mode, arithmetic=False)
+    if operands is None:
+        return f"context: {a_str}{op_char}{b_str}; cannot transform operands."
+    a_s, b_s = operands
+    parts: list[str] = []
+    if mode[0]:
+        parts.append(f"reverse operands [{a_str} -> {a_str[::-1]}, {b_str} -> {b_str[::-1]}]")
+    else:
+        parts.append(f"identity operands [{a_str}, {b_str}]")
+    if mode[1]:
+        parts.append(f"swap -> [{a_s}, {b_s}]")
+    else:
+        parts.append(f"use [{a_s}, {b_s}]")
+    if mode[2] == "num_rev":
+        parts.append("then reverse output digits")
+    elif mode[2] == "num_rev_sfx":
+        parts.append("then reverse output digits and append the operator sign")
+    elif mode[2] == "full_rev":
+        parts.append("then reverse the whole signed output string")
+    else:
+        parts.append("then keep the output as written")
+    return f"context for {a_str}{op_char}{b_str} -> expected {expected}: " + "; ".join(parts) + "."
+
+
+def _operator_trial_lines_for_mode(
+    examples: list[tuple[str, str, str, str]],
+    mode: tuple[bool, bool, str],
+    selected_rule: _Rule | None = None,
+    exhaustive: bool = False,
+) -> list[str]:
+    lines: list[str] = []
+    context = _operator_context_line(examples, mode)
+    if context is not None:
+        lines.append(context)
+    primary_rules, extra_rules = _trial_rules_for_mode(mode)
+    seen: set[_Rule] = set()
+
+    for rule in primary_rules:
+        if rule in seen:
+            continue
+        seen.add(rule)
+        lines.extend(_trial_rule_lines(rule, examples, show_transform=False))
+        if selected_rule is not None and rule == selected_rule:
+            return lines
+
+    should_try_extra = exhaustive or (
+        selected_rule is not None and selected_rule not in seen
+    )
+    if should_try_extra:
+        lines.append("no priority arithmetic rule survives, so try the fallback string/difference rules.")
+        for rule in extra_rules:
+            if rule in seen:
+                continue
+            seen.add(rule)
+            lines.extend(_trial_rule_lines(rule, examples, show_transform=False))
+            if selected_rule is not None and rule == selected_rule:
+                return lines
+
+    if selected_rule is not None and selected_rule not in seen:
+        lines.extend(_trial_rule_lines(selected_rule, examples, show_transform=False))
+    return lines
+
+
+def _flow_trial_lines(
+    examples_by_op: dict[str, list[tuple[str, str, str, str]]],
+    selected_mode: tuple[bool, bool, str],
+    selected_rules: dict[str, _Rule],
+    reversal_out_mode: str,
+    q_op: str,
+) -> list[str]:
+    lines: list[str] = []
+
+    for mode in _candidate_modes(reversal_out_mode):
+        failed_ops = [
+            op_char
+            for op_char in sorted(examples_by_op)
+            if not _rules_matching_examples(examples_by_op[op_char], mode)
+        ]
+        shared_ok = not failed_ops
+        if mode == selected_mode:
+            lines.append(f"try flow [{_mode_name(mode)}]:")
+            for op_char in sorted(examples_by_op):
+                selected = selected_rules.get(op_char) or _best_rule_for_group(
+                    examples_by_op[op_char],
+                    allowed_modes={mode},
+                )
+                lines.append(f"  operator {op_char}:")
+                for trial_line in _operator_trial_lines_for_mode(
+                    examples_by_op[op_char],
+                    mode,
+                    selected_rule=selected,
+                ):
+                    lines.append(f"  {trial_line}")
+                survivor = _rule_op_phrase(selected) if selected is not None else "unknown"
+                lines.append(f"  surviving rule for operator {op_char}: {survivor}.")
+            if q_op not in examples_by_op:
+                lines.append(f"  target operator {q_op}: no examples are available for this operator.")
+            lines.append("  keep this flow because every example operator has a surviving rule.")
+            break
+        if not shared_ok:
+            lines.append(f"try flow [{_mode_name(mode)}]:")
+            failed_op = failed_ops[0]
+            lines.append(f"  operator {failed_op}:")
+            for trial_line in _operator_trial_lines_for_mode(
+                examples_by_op[failed_op],
+                mode,
+                exhaustive=True,
+            ):
+                lines.append(f"  {trial_line}")
+            lines.append("  this operator has no surviving rule under this flow.")
+            lines.append("  reject this flow because at least one operator has no surviving low-cost rule.")
+        else:
+            lines.append(f"try flow [{_mode_name(mode)}]:")
+            for op_char in sorted(examples_by_op):
+                selected = _best_rule_for_group(examples_by_op[op_char], allowed_modes={mode})
+                lines.append(f"  operator {op_char}:")
+                for trial_line in _operator_trial_lines_for_mode(
+                    examples_by_op[op_char],
+                    mode,
+                    selected_rule=selected,
+                ):
+                    lines.append(f"  {trial_line}")
+                survivor = _rule_op_phrase(selected) if selected is not None else "unknown"
+                lines.append(f"  surviving rule for operator {op_char}: {survivor}.")
+            lines.append("  this flow works, but a simpler final rule is preferred later.")
+
+    return lines
+
+
+def _operator_trial_lines(
+    op_char: str,
+    examples: list[tuple[str, str, str, str]],
+    selected_rule: _Rule,
+) -> list[str]:
+    return _operator_trial_lines_for_mode(
+        examples,
+        selected_rule.mode,
+        selected_rule=selected_rule,
+    )
+
+
+def _select_target_rule(
+    examples_by_op: dict[str, list[tuple[str, str, str, str]]],
+    reversal_out_mode: str,
+    q_op: str,
+) -> tuple[_Rule, str] | None:
+    shared_modes = {
+        mode
+        for mode in _candidate_modes(reversal_out_mode)
+        if all(_rules_matching_examples(examples, mode) for examples in examples_by_op.values())
+    }
+    if not shared_modes:
+        return None
+
+    if q_op in examples_by_op:
+        candidates: list[_Rule] = []
+        for mode in shared_modes:
+            selected = _best_rule_for_group(examples_by_op[q_op], allowed_modes={mode})
+            if selected is not None:
+                candidates.append(selected)
+        if candidates:
+            rule = min(candidates, key=_rule_key)
+            return rule, ""
+
+    sorted_modes = sorted(shared_modes, key=lambda item: (_mode_name(item).count("->"), _mode_name(item)))
+    for mode in sorted_modes:
+        selected_rules = {
+            op_char: _best_rule_for_group(examples, allowed_modes={mode})
+            for op_char, examples in examples_by_op.items()
+        }
+        if any(rule is None for rule in selected_rules.values()):
+            continue
+        used_families = {
+            _PRIORITY_FAMILY[rule.op_name]
+            for rule in selected_rules.values()
+            if rule is not None and rule.op_name in _PRIORITY_FAMILY
+        }
+        for op_name, offset in _OP_PRIORITY:
+            if _PRIORITY_FAMILY[op_name] not in used_families:
+                return _Rule(mode, op_name, offset), ""
+    mode = sorted_modes[0]
+    op_name, offset = _OP_PRIORITY[0]
+    return _Rule(mode, op_name, offset), ""
+
+
+def _rule_summary(op_char: str, rule: _Rule) -> str:
+    return (
+        f"operator {op_char}: {_rule_op_phrase(rule)}"
+        f"; mode = {_mode_name(rule.mode)}"
+    )
+
+
+def _missing_operator_elimination_lines(
+    selected_rules: dict[str, _Rule],
+    q_op: str,
+    target_rule: _Rule,
+) -> list[str]:
+    used_families = {
+        _PRIORITY_FAMILY[rule.op_name]: op_char
+        for op_char, rule in selected_rules.items()
+        if op_char != q_op and rule.op_name in _PRIORITY_FAMILY
+    }
+    lines = [
+        "  Step 3. Check whether the question operator appears in the examples.",
+        f"    The question operator is {q_op}.",
+        f"    Operator {q_op} does not appear in the examples, so infer it by elimination.",
+        "    Priority: "
+        + ", ".join(_priority_rule_phrase(op_name, offset) for op_name, offset in _OP_PRIORITY)
+        + ".",
+    ]
+    for op_name, offset in _OP_PRIORITY:
+        phrase = _priority_rule_phrase(op_name, offset)
+        family = _PRIORITY_FAMILY[op_name]
+        owner = used_families.get(family)
+        if owner is not None:
+            lines.append(f"    remove {phrase}: {family} family is already used by operator {owner}.")
+            continue
+        lines.append(f"    keep {phrase}: first unused operation, so assign it to operator {q_op}.")
+        break
+    lines.append(f"    {_rule_summary(q_op, target_rule)}.")
+    return lines
+
 
 def reasoning_equation_numeric(problem: Problem) -> str | None:
-    lines: list[str] = []
-    lines.append("We need to infer the transformation rule from the examples.")
-    lines.append("I will put my final answer inside \\boxed{}.")
-    lines.append("")
-    lines.append("Examples:")
-
     parsed: list[tuple[str, str, str, str]] = []
     for ex in problem.examples:
-        m = _EXPR_RE.fullmatch(str(ex.input_value))
-        if not m:
+        parsed_lhs = _parse_expr(str(ex.input_value))
+        if parsed_lhs is None:
             continue
-        a, op, b = m.group(1), m.group(2), m.group(3)
-        parsed.append((a, op, b, str(ex.output_value)))
-        lines.append(f"  {ex.input_value} = {ex.output_value}")
-
+        a_str, op_char, b_str = parsed_lhs
+        parsed.append((a_str, op_char, b_str, str(ex.output_value)))
     if not parsed:
         return None
 
-    by_op: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
-    for a, op, b, out in parsed:
-        by_op[op].append((a, b, out))
-
-    q_match = _EXPR_RE.fullmatch(str(problem.question))
-    q_op = q_match.group(2) if q_match else None
-
-    # ──── Step 1: 出力形式の確認（全反転 vs 数値反転） ────
-    lines.append("")
-    lines.append("Step 1: Analyze outputs to determine reversal encoding")
-    all_outs = [out for _, _, _, out in parsed]
-    lines.append(f"All outputs: {', '.join(all_outs)}")
-
-    # 演算子記号が出力末尾にある → 全反転（(op+abs_val) を文字列ごと反転）
-    # 出力末尾にない         → 数値反転（桁のみ反転、負は op + reversed_digits）
-    has_suffix = False
-    suffix_example = ""
-    for op_char, group in by_op.items():
-        for a, b, out in group:
-            if len(out) > 1 and out[-1] == op_char:
-                has_suffix = True
-                suffix_example = f"{a}{op_char}{b}={out}"
-                break
-        if has_suffix:
-            break
-
-    if has_suffix:
-        lines.append(f"Output ending with operator symbol found: {suffix_example}")
-        lines.append("→ Reversal (if any) uses full reversal.")
-        lines.append("  Negative encoding: (op + abs_digits) reversed as a whole string.")
-        out_mode = "full_rev"
-    else:
-        lines.append("No output ends with an operator symbol.")
-        lines.append("→ Reversal (if any) uses numeric reversal.")
-        lines.append("  Negative encoding: op_char + reversed_abs_digits.")
-        out_mode = "num_rev"
-
-    # モードリスト: [反転→演算→(全/数値)反転, 演算, 反転→交換→演算→(全/数値)反転]
-    modes: list[tuple[bool, bool, str]] = [
-        (False, False, "none"),
-        (True,  False, out_mode),
-        (True,  True,  out_mode),
-    ]
-
-    # ──── Step 2: common演算 × 全モード × 全演算子 ────
-    result = _search_phase(by_op, modes, "Step 2: Common operations (offset=0)", False, lines)
-
-    # ──── Step 3: rare+common演算 × 全モード × 全演算子 ────
-    if result is None:
-        result = _search_phase(by_op, modes, "Step 3: All operations (rare + offset)", True, lines)
-
-    if result is None:
+    question = _parse_expr(str(problem.question))
+    if question is None:
         return None
+    q_a, q_op, q_b = question
 
-    # ──── 質問に適用 ────
-    if q_match is None or q_op is None:
+    by_op: dict[str, list[tuple[str, str, str, str]]] = defaultdict(list)
+    for example in parsed:
+        by_op[example[1]].append(example)
+
+    reversal_out_mode, reversal_choice_lines = _reversal_choice(parsed)
+    target = _select_target_rule(by_op, reversal_out_mode, q_op)
+    if target is None:
         return None
+    target_rule, _ = target
+    best_mode = target_rule.mode
 
-    qa, qb = q_match.group(1), q_match.group(3)
+    selected_rules: dict[str, _Rule] = {}
+    for op_char, examples in by_op.items():
+        selected = _best_rule_for_group(examples, allowed_modes={best_mode})
+        if selected is not None:
+            selected_rules[op_char] = selected
+    selected_rules[q_op] = target_rule
+
+    lines: list[str] = []
+    lines.append("We need to infer a numeric equation rule from the examples and then solve the question.")
+    lines.append("The reasoning should include trial and error: try simple shared flows, reject candidates that contradict an example, keep the surviving operator rule, and then apply it to the question.")
     lines.append("")
-    lines.append(f"Applying to {problem.question}:")
+    lines.append("Examples:")
+    for a_str, op_char, b_str, out in parsed:
+        lines.append(f"  {a_str}{op_char}{b_str} = {out}")
+    lines.append("")
+    lines.append(f"Question: {problem.question}")
 
-    if q_op in result:
-        found = result[q_op]
+    lines.append("")
+    lines.append("Reasoning flow:")
+    lines.append("  Step 1. Inspect the right-hand sides to decide the output reversal style.")
+    for choice_line in reversal_choice_lines:
+        lines.append(f"    {choice_line}")
+    lines.append("  Step 2. Try shared input/output flows in priority order.")
+    for trial_line in _flow_trial_lines(
+        by_op,
+        best_mode,
+        selected_rules,
+        reversal_out_mode,
+        q_op,
+    ):
+        lines.append(f"    {trial_line}")
+    lines.append(f"    Shared flow: {_mode_name(best_mode)}.")
+    if q_op not in by_op:
+        lines.extend(_missing_operator_elimination_lines(selected_rules, q_op, target_rule))
     else:
-        # 質問演算子が例示にない → 最初の演算子の設定で abs_diff を使用
-        first = next(iter(result.values()))
-        lines.append(
-            f"  Operator 【{q_op}】 not in examples. "
-            f"Using abs_diff with mode 【{_mode_label(first.rev_in, first.swap, first.out_mode)}】."
-        )
-        found = _MatchResult(
-            op_name="abs_diff",
-            rev_in=first.rev_in, swap=first.swap, out_mode=first.out_mode,
-            op_char=q_op,
-        )
+        lines.append("  Step 3. Check the question operator and record the selected operator rules.")
+        lines.append(f"    The question operator is {q_op}.")
+        if q_op in by_op:
+            lines.append(f"    Operator {q_op} appears in the examples, so reuse its inferred rule.")
+        else:
+            lines.append(f"    Operator {q_op} does not appear in the examples, so use the fallback inferred rule.")
 
-    result_val, steps = _apply_match(found, qa, qb)
-    for step in steps:
-        lines.append(f"  {step}")
-    lines.append(f"  Result: 【{result_val}】")
+        for op_char in sorted(selected_rules):
+            rule = selected_rules[op_char]
+            lines.append(f"    {_rule_summary(op_char, rule)}.")
+
+    lines.append("  Step 4. Verify that the inferred rules reproduce every example.")
+    for idx, (a_str, op_char, b_str, expected) in enumerate(parsed, start=1):
+        rule = selected_rules.get(op_char)
+        if rule is None:
+            return None
+        ok, line = _compact_rule_attempt(rule, a_str, op_char, b_str, expected)
+        if not ok:
+            return None
+        lines.append(f"    Example {idx}: {line}")
 
     lines.append("")
-    lines.append("I will now return the answer in \\boxed{}")
-    lines.append(f"The answer in \\boxed{{–}} is \\boxed{{{result_val}}}")
+    lines.append(f"  Step 5. Apply the same flow to the question: {problem.question}.")
+    final_predicted = _predict_with_rule(q_a, q_b, q_op, target_rule)
+    if final_predicted is None:
+        return None
+    ok, final_line = _compact_rule_attempt(target_rule, q_a, q_op, q_b, final_predicted)
+    if not ok:
+        return None
+    lines.append(f"    {final_line}")
+    lines.append(f"    Therefore the result is {final_predicted}.")
+    lines.append("")
+    lines.append(f"The answer in \\boxed{{-}} is \\boxed{{{final_predicted}}}")
     return "\n".join(lines)
