@@ -45,6 +45,10 @@ _PRIORITY_FAMILY = {
 }
 
 
+def _op_box(op_char: str) -> str:
+    return f"【{op_char}】"
+
+
 @dataclass(frozen=True)
 class _Rule:
     mode: tuple[bool, bool, str]
@@ -668,29 +672,34 @@ def _operator_context_line(
 ) -> str | None:
     if not examples:
         return None
-    a_str, op_char, b_str, expected = examples[0]
-    operands = _transformed_operands(a_str, b_str, mode, arithmetic=False)
-    if operands is None:
-        return f"context: {a_str}{op_char}{b_str}; cannot transform operands."
-    a_s, b_s = operands
-    parts: list[str] = []
-    if mode[0]:
-        parts.append(f"reverse operands [{a_str} -> {a_str[::-1]}, {b_str} -> {b_str[::-1]}]")
-    else:
-        parts.append(f"identity operands [{a_str}, {b_str}]")
-    if mode[1]:
-        parts.append(f"swap -> [{a_s}, {b_s}]")
-    else:
-        parts.append(f"use [{a_s}, {b_s}]")
+    contexts: list[str] = []
+    for a_str, op_char, b_str, expected in examples:
+        operands = _transformed_operands(a_str, b_str, mode, arithmetic=False)
+        if operands is None:
+            contexts.append(f"{a_str}{op_char}{b_str} -> expected {expected}: cannot transform operands")
+            continue
+        a_s, b_s = operands
+        parts: list[str] = []
+        if mode[0]:
+            parts.append(f"reverse operands [{a_str} -> {a_str[::-1]}, {b_str} -> {b_str[::-1]}]")
+        else:
+            parts.append(f"identity operands [{a_str}, {b_str}]")
+        if mode[1]:
+            parts.append(f"swap -> [{a_s}, {b_s}]")
+        else:
+            parts.append(f"use [{a_s}, {b_s}]")
+        contexts.append(f"{a_str}{op_char}{b_str} -> expected {expected}: " + "; ".join(parts))
+
+    suffix: str
     if mode[2] == "num_rev":
-        parts.append("then reverse output digits")
+        suffix = "then reverse output digits"
     elif mode[2] == "num_rev_sfx":
-        parts.append("then reverse output digits and append the operator sign")
+        suffix = "then reverse output digits and append the operator sign"
     elif mode[2] == "full_rev":
-        parts.append("then reverse the whole signed output string")
+        suffix = "then reverse the whole signed output string"
     else:
-        parts.append("then keep the output as written")
-    return f"context for {a_str}{op_char}{b_str} -> expected {expected}: " + "; ".join(parts) + "."
+        suffix = "then keep the output as written"
+    return "context for this operator: " + " | ".join(contexts) + f"; {suffix}."
 
 
 def _operator_trial_lines_for_mode(
@@ -755,7 +764,7 @@ def _flow_trial_lines(
                     examples_by_op[op_char],
                     allowed_modes={mode},
                 )
-                lines.append(f"  operator {op_char}:")
+                lines.append(f"  operator {_op_box(op_char)}:")
                 for trial_line in _operator_trial_lines_for_mode(
                     examples_by_op[op_char],
                     mode,
@@ -763,15 +772,15 @@ def _flow_trial_lines(
                 ):
                     lines.append(f"  {trial_line}")
                 survivor = _rule_op_phrase(selected) if selected is not None else "unknown"
-                lines.append(f"  surviving rule for operator {op_char}: {survivor}.")
+                lines.append(f"  surviving rule for operator {_op_box(op_char)}: {survivor}.")
             if q_op not in examples_by_op:
-                lines.append(f"  target operator {q_op}: no examples are available for this operator.")
+                lines.append(f"  target operator {_op_box(q_op)}: no examples are available for this operator.")
             lines.append("  keep this flow because every example operator has a surviving rule.")
             break
         if not shared_ok:
             lines.append(f"try flow [{_mode_name(mode)}]:")
             failed_op = failed_ops[0]
-            lines.append(f"  operator {failed_op}:")
+            lines.append(f"  operator {_op_box(failed_op)}:")
             for trial_line in _operator_trial_lines_for_mode(
                 examples_by_op[failed_op],
                 mode,
@@ -784,7 +793,7 @@ def _flow_trial_lines(
             lines.append(f"try flow [{_mode_name(mode)}]:")
             for op_char in sorted(examples_by_op):
                 selected = _best_rule_for_group(examples_by_op[op_char], allowed_modes={mode})
-                lines.append(f"  operator {op_char}:")
+                lines.append(f"  operator {_op_box(op_char)}:")
                 for trial_line in _operator_trial_lines_for_mode(
                     examples_by_op[op_char],
                     mode,
@@ -792,7 +801,7 @@ def _flow_trial_lines(
                 ):
                     lines.append(f"  {trial_line}")
                 survivor = _rule_op_phrase(selected) if selected is not None else "unknown"
-                lines.append(f"  surviving rule for operator {op_char}: {survivor}.")
+                lines.append(f"  surviving rule for operator {_op_box(op_char)}: {survivor}.")
             lines.append("  this flow works, but a simpler final rule is preferred later.")
 
     return lines
@@ -856,9 +865,67 @@ def _select_target_rule(
 
 def _rule_summary(op_char: str, rule: _Rule) -> str:
     return (
-        f"operator {op_char}: {_rule_op_phrase(rule)}"
+        f"operator {_op_box(op_char)}: {_rule_op_phrase(rule)}"
         f"; mode = {_mode_name(rule.mode)}"
     )
+
+
+def _problem_symbol_lines(
+    examples: list[tuple[str, str, str, str]],
+    question: tuple[str, str, str],
+) -> list[str]:
+    inputs: list[str] = []
+    outputs: list[str] = []
+    operators: list[str] = []
+    seen_ops: set[str] = set()
+    prefix_ops: set[str] = set()
+    suffix_ops: set[str] = set()
+
+    for a_str, op_char, b_str, rhs in examples:
+        inputs.extend([a_str, b_str])
+        outputs.append(rhs)
+        if op_char not in seen_ops:
+            seen_ops.add(op_char)
+            operators.append(op_char)
+        if len(rhs) > len(op_char) and rhs.startswith(op_char):
+            prefix_ops.add(op_char)
+        if len(rhs) > len(op_char) and rhs.endswith(op_char):
+            suffix_ops.add(op_char)
+
+    q_a, q_op, q_b = question
+    lines: list[str] = []
+    lines.append("The inputs are " + ", ".join(inputs))
+    lines.append("")
+    lines.append("The outputs are " + ", ".join(outputs))
+    if prefix_ops:
+        ops = ", ".join(_op_box(op) for op in sorted(prefix_ops))
+        lines.append(f"Some outputs have the operator symbol as prefix {ops}.")
+        lines.append("We now consider the outputs to be " + ", ".join(outputs) + ".")
+        lines.append("We treat that prefix as the sign marker for a negative value.")
+        lines.append("We will add back the operator prefix if our answer is negative.")
+    if suffix_ops:
+        ops = ", ".join(_op_box(op) for op in sorted(suffix_ops))
+        lines.append(f"Some outputs have the operator symbol as suffix {ops}.")
+        if not prefix_ops:
+            lines.append("We now consider the outputs to be " + ", ".join(outputs) + ".")
+        lines.append("We treat that suffix as the sign marker for a reversed negative value.")
+    if not prefix_ops and not suffix_ops:
+        lines.append("No output uses an operator symbol as a visible sign marker.")
+        lines.append("We now consider the outputs as ordinary numeric strings.")
+    lines.append("")
+    lines.append("Looking at the input of the examples")
+    for a_str, op_char, b_str, _ in examples:
+        lines.append(f"{a_str}{op_char}{b_str} -> {_op_box(op_char)}")
+    lines.append("")
+    lines.append("The operators are " + ", ".join(_op_box(op) for op in operators))
+    lines.append("")
+    lines.append("Looking at the question")
+    lines.append(f"{q_a}{q_op}{q_b} -> {_op_box(q_op)}")
+    if q_op in seen_ops:
+        lines.append("The question operator is found in the examples.")
+    else:
+        lines.append("The question operator is not found in the examples.")
+    return lines
 
 
 def _missing_operator_elimination_lines(
@@ -873,8 +940,8 @@ def _missing_operator_elimination_lines(
     }
     lines = [
         "  Step 3. Check whether the question operator appears in the examples.",
-        f"    The question operator is {q_op}.",
-        f"    Operator {q_op} does not appear in the examples, so infer it by elimination.",
+        f"    The question operator is {_op_box(q_op)}.",
+        f"    Operator {_op_box(q_op)} does not appear in the examples, so infer it by elimination.",
         "    Priority: "
         + ", ".join(_priority_rule_phrase(op_name, offset) for op_name, offset in _OP_PRIORITY)
         + ".",
@@ -884,9 +951,9 @@ def _missing_operator_elimination_lines(
         family = _PRIORITY_FAMILY[op_name]
         owner = used_families.get(family)
         if owner is not None:
-            lines.append(f"    remove {phrase}: {family} family is already used by operator {owner}.")
+            lines.append(f"    remove {phrase}: {family} family is already used by operator {_op_box(owner)}.")
             continue
-        lines.append(f"    keep {phrase}: first unused operation, so assign it to operator {q_op}.")
+        lines.append(f"    keep {phrase}: first unused operation, so assign it to operator {_op_box(q_op)}.")
         break
     lines.append(f"    {_rule_summary(q_op, target_rule)}.")
     return lines
@@ -935,6 +1002,8 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
         lines.append(f"  {a_str}{op_char}{b_str} = {out}")
     lines.append("")
     lines.append(f"Question: {problem.question}")
+    lines.append("")
+    lines.extend(_problem_symbol_lines(parsed, question))
 
     lines.append("")
     lines.append("Reasoning flow:")
@@ -955,11 +1024,11 @@ def reasoning_equation_numeric(problem: Problem) -> str | None:
         lines.extend(_missing_operator_elimination_lines(selected_rules, q_op, target_rule))
     else:
         lines.append("  Step 3. Check the question operator and record the selected operator rules.")
-        lines.append(f"    The question operator is {q_op}.")
+        lines.append(f"    The question operator is {_op_box(q_op)}.")
         if q_op in by_op:
-            lines.append(f"    Operator {q_op} appears in the examples, so reuse its inferred rule.")
+            lines.append(f"    Operator {_op_box(q_op)} appears in the examples, so reuse its inferred rule.")
         else:
-            lines.append(f"    Operator {q_op} does not appear in the examples, so use the fallback inferred rule.")
+            lines.append(f"    Operator {_op_box(q_op)} does not appear in the examples, so use the fallback inferred rule.")
 
         for op_char in sorted(selected_rules):
             rule = selected_rules[op_char]

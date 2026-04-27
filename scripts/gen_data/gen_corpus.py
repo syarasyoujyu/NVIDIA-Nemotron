@@ -7,8 +7,10 @@
 推論テキストはそのまま続く形になる。
 
 出力:
-- corpus.jsonl                         - エントリーごとのメタデータインデックス
-- corpus/<problem_id>/synthetic.jsonl  - マスク済み/非マスクを交互に並べたセグメントファイル
+- corpus.jsonl                            - エントリーごとのメタデータインデックス
+- corpus_token_counts.csv                 - エントリーごとの token count 明細
+- corpus_unmasked_token_stats.json        - カテゴリ別 unmasked token count 集計
+- corpus/<problem_id>/synthetic.jsonl     - マスク済み/非マスクを交互に並べたセグメントファイル
 
 使い方:
     uv run corpus.py
@@ -18,6 +20,7 @@ import csv
 import json
 import re
 import shutil
+from collections import defaultdict
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
@@ -39,6 +42,13 @@ from scripts.basic.const import (
 )
 
 load_dotenv()
+
+UNMASKED_TOKEN_THRESHOLDS = (2000, 4000, 6000, 8000)
+TOKEN_COUNTS_PATH = CORPUS_INDEX.with_name("corpus_token_counts.csv")
+UNMASKED_TOKEN_STATS_PATH = CORPUS_INDEX.with_name(
+    "corpus_unmasked_token_stats.json"
+)
+
 
 def tokenize_prompt(
     prompt_text: str,
@@ -66,6 +76,7 @@ class CorpusEntry:
     category: str
     tokens: list[int]
     mask: list[int]
+    prompt_token_count: int
     masked_token_count: int
     unmasked_token_count: int
     answer: str
@@ -80,6 +91,7 @@ class CorpusEntry:
             "problem_id": self.problem_id,
             "segment": "synthetic.jsonl",
             "category": self.category,
+            "prompt_token_count": self.prompt_token_count,
             "masked_token_count": self.masked_token_count,
             "unmasked_token_count": self.unmasked_token_count,
             "token_count": self.token_count,
@@ -122,6 +134,91 @@ def build_segments(
     )
 
     return segments
+
+
+def _threshold_key(threshold: int) -> str:
+    return f"gte_{threshold}"
+
+
+def _build_unmasked_token_stats(entries: list[CorpusEntry]) -> dict:
+    """カテゴリ別の unmasked token count 統計を構築する。"""
+    by_category: dict[str, list[CorpusEntry]] = defaultdict(list)
+    for entry in entries:
+        by_category[entry.category].append(entry)
+
+    def summarize(category_entries: list[CorpusEntry]) -> dict[str, object]:
+        unmasked_counts = [entry.unmasked_token_count for entry in category_entries]
+        prompt_counts = [entry.prompt_token_count for entry in category_entries]
+        unmasked_total = sum(unmasked_counts)
+        prompt_total = sum(prompt_counts)
+        summary: dict[str, object] = {
+            "count": len(unmasked_counts),
+            "prompt_token_total": prompt_total,
+            "prompt_token_min": min(prompt_counts) if prompt_counts else 0,
+            "prompt_token_max": max(prompt_counts) if prompt_counts else 0,
+            "prompt_token_avg": (
+                round(prompt_total / len(prompt_counts), 3) if prompt_counts else 0
+            ),
+            "unmasked_token_total": unmasked_total,
+            "unmasked_token_min": min(unmasked_counts) if unmasked_counts else 0,
+            "unmasked_token_max": max(unmasked_counts) if unmasked_counts else 0,
+            "unmasked_token_avg": (
+                round(unmasked_total / len(unmasked_counts), 3)
+                if unmasked_counts
+                else 0
+            ),
+        }
+        for threshold in UNMASKED_TOKEN_THRESHOLDS:
+            summary[_threshold_key(threshold)] = sum(
+                count >= threshold for count in unmasked_counts
+            )
+        return summary
+
+    return {
+        "threshold_basis": "unmasked_token_count",
+        "thresholds": list(UNMASKED_TOKEN_THRESHOLDS),
+        "total": summarize(entries),
+        "by_category": {
+            category: summarize(category_entries)
+            for category, category_entries in sorted(by_category.items())
+        },
+    }
+
+
+def _write_token_count_outputs(entries: list[CorpusEntry]) -> dict:
+    """Token count の明細 CSV とカテゴリ別 unmasked 集計 JSON を書き出す。"""
+    with open(TOKEN_COUNTS_PATH, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "problem_id",
+                "category",
+                "prompt_token_count",
+                "token_count",
+                "masked_token_count",
+                "unmasked_token_count",
+                "included",
+            ],
+        )
+        writer.writeheader()
+        for entry in entries:
+            writer.writerow(
+                {
+                    "problem_id": entry.problem_id,
+                    "category": entry.category,
+                    "prompt_token_count": entry.prompt_token_count,
+                    "token_count": entry.token_count,
+                    "masked_token_count": entry.masked_token_count,
+                    "unmasked_token_count": entry.unmasked_token_count,
+                    "included": entry.included,
+                }
+            )
+
+    stats = _build_unmasked_token_stats(entries)
+    with open(UNMASKED_TOKEN_STATS_PATH, "w") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return stats
 
 
 def main() -> None:
@@ -180,6 +277,7 @@ def main() -> None:
 
         # プロンプトをトークナイズする（raw/ への依存なし）
         prompt_ids = tokenize_prompt(prompts[problem_id], chat_tokenizer)
+        prompt_token_count = len(prompt_ids)
 
         all_tokens = prompt_ids + completion_ids
         mask = [0] * len(prompt_ids) + [1] * len(completion_ids)
@@ -197,6 +295,7 @@ def main() -> None:
             category=category,
             tokens=all_tokens,
             mask=mask,
+            prompt_token_count=prompt_token_count,
             masked_token_count=masked_count,
             unmasked_token_count=unmasked_count,
             answer=answer,
@@ -234,6 +333,7 @@ def main() -> None:
             ).ids
 
             prompt_ids = tokenize_prompt(prompt_text, chat_tokenizer, suffix="")
+            prompt_token_count = len(prompt_ids)
 
             all_tokens = prompt_ids + completion_ids
             mask = [0] * len(prompt_ids) + [1] * len(completion_ids)
@@ -251,6 +351,7 @@ def main() -> None:
                 category=category,
                 tokens=all_tokens,
                 mask=mask,
+                prompt_token_count=prompt_token_count,
                 masked_token_count=masked_count,
                 unmasked_token_count=unmasked_count,
                 answer=completion,
@@ -275,24 +376,44 @@ def main() -> None:
             json.dump(e.to_index_dict(), f)
             f.write("\n")
 
+    unmasked_token_stats = _write_token_count_outputs(entries)
+
     # 統計を表示する
     cat_counts: dict[str, int] = {cat: 0 for cat in {e.category for e in entries}}
     cat_tokens: dict[str, int] = {cat: 0 for cat in cat_counts}
+    cat_prompt_tokens: dict[str, int] = {cat: 0 for cat in cat_counts}
     for e in entries:
         cat_counts[e.category] += 1
         cat_tokens[e.category] += e.unmasked_token_count
+        cat_prompt_tokens[e.category] += e.prompt_token_count
 
     total_unmasked = sum(e.unmasked_token_count for e in entries)
     total_masked = sum(e.masked_token_count for e in entries)
+    total_prompt = sum(e.prompt_token_count for e in entries)
     max_tokens = max((e.token_count for e in entries), default=0)
+    max_prompt_tokens = max((e.prompt_token_count for e in entries), default=0)
 
     print(f"Corpus (synthetic): {len(entries)} entries")
     print(f"Unmasked tokens: {total_unmasked:,}")
     print(f"Masked tokens:   {total_masked:,}")
+    print(f"Prompt tokens:   {total_prompt:,}")
     print(f"Max seq length:  {max_tokens:,}")
+    print(f"Max prompt len:  {max_prompt_tokens:,}")
+    print(f"Token count details:      {TOKEN_COUNTS_PATH}")
+    print(f"Unmasked token stats:     {UNMASKED_TOKEN_STATS_PATH}")
     print()
     for cat in sorted(cat_counts):
-        print(f"  {cat}: {cat_counts[cat]} runs, {cat_tokens[cat]:,} unmasked tokens")
+        stats = unmasked_token_stats["by_category"][cat]
+        threshold_text = ", ".join(
+            f">={threshold}: {stats[_threshold_key(threshold)]}"
+            for threshold in UNMASKED_TOKEN_THRESHOLDS
+        )
+        print(
+            f"  {cat}: {cat_counts[cat]} runs, "
+            f"{cat_tokens[cat]:,} unmasked tokens, "
+            f"{cat_prompt_tokens[cat]:,} prompt tokens "
+            f"(unmasked {threshold_text})"
+        )
 
 
 if __name__ == "__main__":
