@@ -5,7 +5,15 @@ UV_MODAL_RUN := uv run modal run
 
 UV_MODAL_DEPLOY:=uv run modal deploy
 PATTERN_DIR := data/patterns
-TRAIN_ARGS ?= --num_epochs 1 --batch_size 64 --learning_rate 0.0002
+# category order:
+# bit_manipulation,cipher,cryptarithm_deduce,cryptarithm_guess,equation_numeric_deduce,equation_numeric_guess,gravity,numeral,unit_conversion
+# task type order:
+# gravity,numeral,unit_conversion,cipher,bit_manipulation,equation_transformation
+TASK_TYPE_LIMIT_COUNTS ?=
+CATEGORY_LIMIT_COUNTS ?= [600,700,800,0,800,0,400,300,700]
+TRAIN_COT_PROMPT_FILTER_MODE ?= correct
+TRAIN_BATCH_STRATIFY_BY ?= task_type
+TRAIN_ARGS ?= --num_epochs 2 --batch_size 16 --learning_rate 0.0002 --cot_prompt_filter_mode $(TRAIN_COT_PROMPT_FILTER_MODE) --batch_stratify_by $(TRAIN_BATCH_STRATIFY_BY) $(if $(TASK_TYPE_LIMIT_COUNTS),--task_type_limit_counts "$(TASK_TYPE_LIMIT_COUNTS)",) $(if $(CATEGORY_LIMIT_COUNTS),--category_limit_counts "$(CATEGORY_LIMIT_COUNTS)",)
 INFER_RUN ?= 04-28-08-23
 INFER_ARGS ?= --run $(INFER_RUN)
 VLLM_INFER_MODEL_PATH ?= nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16

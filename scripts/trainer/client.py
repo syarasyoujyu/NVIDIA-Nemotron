@@ -156,6 +156,7 @@ class ServiceClient:
             train_mlp=train_mlp,
             train_attn=train_attn,
             train_unembed=train_unembed,
+            user_metadata={"save_every":"100"},
         )
         return TrainingClient(backend="tinker", tinker_client=tinker_tc)
 

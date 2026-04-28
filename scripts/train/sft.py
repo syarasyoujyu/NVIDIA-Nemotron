@@ -19,8 +19,15 @@ from datetime import datetime
 import tinker
 from dotenv import load_dotenv
 
-from scripts.basic.const import SFT_DIR
-from scripts.train.base import TrainingExample, build_datum, load_corpus_entries
+from scripts.basic.const import PROBLEMS_INDEX, SFT_DIR
+from scripts.train.base import (
+    CATEGORY_ORDER,
+    TASK_TYPE_BY_CATEGORY,
+    TASK_TYPE_ORDER,
+    TrainingExample,
+    build_datum,
+    load_corpus_entries,
+)
 from scripts.train.config import Cfg, IndexRecord, LogprobRecord
 from scripts.train.loss_config import (
     LossConfig,
@@ -29,6 +36,65 @@ from scripts.trainer.client import ServiceClient
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def _parse_category_limit_counts(value: str) -> list[int | None]:
+    """カテゴリ順の上限リストをパースする。空欄/null は上限なし。"""
+    return _parse_limit_counts(value, CATEGORY_ORDER, "category")
+
+
+def _parse_task_type_limit_counts(value: str) -> list[int | None]:
+    """タスクタイプ順の上限リストをパースする。空欄/null は上限なし。"""
+    return _parse_limit_counts(value, TASK_TYPE_ORDER, "task type")
+
+
+def _parse_limit_counts(
+    value: str,
+    order: tuple[str, ...],
+    label: str,
+) -> list[int | None]:
+    """固定順の上限リストをパースする。空欄/null は上限なし。"""
+    raw = value.strip()
+    if not raw:
+        return [None] * len(order)
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            if not raw.endswith("]"):
+                raise argparse.ArgumentTypeError(str(exc)) from exc
+            parsed = [part.strip() for part in raw[1:-1].split(",")]
+        if not isinstance(parsed, list):
+            raise argparse.ArgumentTypeError("category limits must be a list")
+        parts = parsed
+    else:
+        parts = [part.strip() for part in raw.split(",")]
+
+    if len(parts) > len(order):
+        raise argparse.ArgumentTypeError(
+            f"expected at most {len(order)} {label} limits, got {len(parts)}"
+        )
+
+    limits: list[int | None] = []
+    for part in parts:
+        if part is None:
+            limits.append(None)
+            continue
+        if isinstance(part, str) and part.strip().lower() in {"", "none", "null", "-"}:
+            limits.append(None)
+            continue
+        try:
+            limit = int(part)
+        except (TypeError, ValueError) as exc:
+            raise argparse.ArgumentTypeError(
+                f"invalid category limit value: {part!r}"
+            ) from exc
+        if limit < 0:
+            raise argparse.ArgumentTypeError("category limits must be >= 0")
+        limits.append(limit)
+
+    limits.extend([None] * (len(order) - len(limits)))
+    return limits
 
 
 def _build_cfg() -> Cfg:
@@ -46,6 +112,43 @@ def _build_cfg() -> Cfg:
     p.add_argument("--train_unembed", action=argparse.BooleanOptionalAction, default=None)
     p.add_argument("--grad_clip_norm", type=float)
     p.add_argument("--weight_decay", type=float)
+    p.add_argument(
+        "--cot_prompt_filter_mode",
+        choices=["all", "incorrect", "correct"],
+        default="all",
+        help=(
+            "all: use all corpus rows; incorrect: train only problems whose "
+            "scripts/cot_prompt answer did not match the actual answer; "
+            "correct: train only matched problems."
+        ),
+    )
+    p.add_argument(
+        "--batch_stratify_by",
+        choices=["category", "task_type"],
+        default="task_type",
+        help=(
+            "Distribute samples across batches while preserving the selected "
+            "group ratio as much as possible."
+        ),
+    )
+    p.add_argument(
+        "--category_limit_counts",
+        type=_parse_category_limit_counts,
+        help=(
+            "Per-category maximum counts in fixed category order. "
+            "Accepts comma-separated values with blanks, or a JSON list. "
+            f"Order: {', '.join(CATEGORY_ORDER)}"
+        ),
+    )
+    p.add_argument(
+        "--task_type_limit_counts",
+        type=_parse_task_type_limit_counts,
+        help=(
+            "Per-task-type maximum counts in fixed task type order. "
+            "Accepts comma-separated values with blanks, or a JSON list. "
+            f"Order: {', '.join(TASK_TYPE_ORDER)}"
+        ),
+    )
     args = p.parse_args()
 
     cfg = Cfg()
@@ -53,6 +156,8 @@ def _build_cfg() -> Cfg:
         "num_epochs", "batch_size", "lora_rank", "max_length",
         "log_path", "backend", "micro_batch_size",
         "train_mlp", "train_attn", "train_unembed",
+        "cot_prompt_filter_mode", "batch_stratify_by",
+        "category_limit_counts", "task_type_limit_counts",
     ]:
         val = getattr(args, field)
         if val is not None:
@@ -67,30 +172,39 @@ def _build_cfg() -> Cfg:
 
 
 def _stratified_batches(
-    examples: list[TrainingExample], batch_size: int, rng: random.Random
+    examples: list[TrainingExample],
+    batch_size: int,
+    rng: random.Random,
+    *,
+    stratify_by: str,
 ) -> list[list[int]]:
-    """カテゴリが均等に分散する同サイズのバッチを返す。
+    """全体のカテゴリ/タスクタイプ比率をなるべく保つバッチを返す。
 
-    シャッフル済みのバッチ順にエントリを1つずつ配り、カテゴリを順に巡回することで、
-    各カテゴリのエントリを複数バッチへ分散させる。
+    例: データが task_type A:B:C = 3:1:1 なら、各バッチもできるだけ
+    3:1:1 に近くなるよう、各 group のサンプルを全バッチへ均等に撒く。
     """
     n = len(examples)
     n_batches = math.ceil(n / batch_size)
 
-    # カテゴリごとにまとめ、カテゴリ内でシャッフルする
-    by_cat: dict[str, list[int]] = {}
+    def group_key(example: TrainingExample) -> str:
+        if stratify_by == "task_type":
+            return TASK_TYPE_BY_CATEGORY[example.category]
+        return example.category
+
+    # group ごとにまとめ、group 内でシャッフルする
+    by_group: dict[str, list[int]] = {}
     for i, ex in enumerate(examples):
-        by_cat.setdefault(ex.category, []).append(i)
-    for idx_list in by_cat.values():
+        by_group.setdefault(group_key(ex), []).append(i)
+    for idx_list in by_group.values():
         rng.shuffle(idx_list)
 
-    # 各カテゴリにシャッフル済みのバッチ順を割り当てる
+    # 各 group を全バッチへ均等に撒くことで、全体比率を各バッチへ近似する。
     batches: list[list[int]] = [[] for _ in range(n_batches)]
     batch_order = list(range(n_batches))
     rng.shuffle(batch_order)
     assigned = 0
-    for cat in sorted(by_cat.keys()):
-        for idx in by_cat[cat]:
+    for group in sorted(by_group.keys()):
+        for idx in by_group[group]:
             batches[batch_order[assigned % n_batches]].append(idx)
             assigned += 1
 
@@ -167,6 +281,173 @@ def filter_training_examples(examples: list[TrainingExample]) -> list[TrainingEx
     return examples
 
 
+def _load_cot_prompt_correctness() -> dict[str, bool]:
+    """scripts/cot_prompt が生成した答えの正誤を problem_id -> bool で返す。"""
+    correctness: dict[str, bool] = {}
+    with PROBLEMS_INDEX.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            correctness[str(row["id"])] = row.get("status") == "rule_found"
+    if not correctness:
+        raise ValueError(f"No problem rows found in {PROBLEMS_INDEX}")
+    return correctness
+
+
+def filter_examples_by_cot_prompt(
+    examples: list[TrainingExample],
+    *,
+    mode: str,
+) -> tuple[list[TrainingExample], dict[str, object]]:
+    """scripts/cot_prompt で作った答えの正誤に応じて学習サンプルを選ぶ。"""
+    if mode == "all":
+        return examples, {
+            "mode": mode,
+            "source": str(PROBLEMS_INDEX),
+            "matched_problem_rows": None,
+            "missing_problem_rows": None,
+            "kept_examples": len(examples),
+            "dropped_examples": 0,
+        }
+    correctness = _load_cot_prompt_correctness()
+
+    kept: list[TrainingExample] = []
+    missing = 0
+    for example in examples:
+        if example.problem_id not in correctness:
+            missing += 1
+            continue
+        is_correct = correctness[example.problem_id]
+        if mode == "incorrect" and not is_correct:
+            kept.append(example)
+        elif mode == "correct" and is_correct:
+            kept.append(example)
+
+    if not kept:
+        raise ValueError(
+            "CoT prompt filtering removed all training examples. "
+            f"mode={mode}, source={PROBLEMS_INDEX}"
+        )
+
+    return kept, {
+        "mode": mode,
+        "source": str(PROBLEMS_INDEX),
+        "matched_problem_rows": len(correctness),
+        "missing_problem_rows": missing,
+        "kept_examples": len(kept),
+        "dropped_examples": len(examples) - len(kept),
+        "correct_cot_prompt_problems": sum(1 for v in correctness.values() if v),
+        "incorrect_cot_prompt_problems": sum(1 for v in correctness.values() if not v),
+    }
+
+
+def limit_examples_by_category(
+    examples: list[TrainingExample],
+    limits: list[int | None] | None,
+) -> tuple[list[TrainingExample], dict[str, object]]:
+    """カテゴリごとの上限数に従って学習サンプルを切り詰める。"""
+    before_counts = Counter(example.category for example in examples)
+    if limits is None:
+        return examples, {
+            "enabled": False,
+            "category_order": list(CATEGORY_ORDER),
+            "limits": None,
+            "before_counts": dict(sorted(before_counts.items())),
+            "after_counts": dict(sorted(before_counts.items())),
+            "kept_examples": len(examples),
+            "dropped_examples": 0,
+        }
+
+    limit_by_category = dict(zip(CATEGORY_ORDER, limits))
+    seen: Counter[str] = Counter()
+    kept: list[TrainingExample] = []
+    for example in examples:
+        limit = limit_by_category.get(example.category)
+        if limit is None:
+            kept.append(example)
+            continue
+        if seen[example.category] < limit:
+            kept.append(example)
+            seen[example.category] += 1
+
+    if not kept:
+        raise ValueError(
+            "Category limit filtering removed all training examples. "
+            f"limits={limits}"
+        )
+
+    after_counts = Counter(example.category for example in kept)
+    return kept, {
+        "enabled": True,
+        "category_order": list(CATEGORY_ORDER),
+        "limits": {
+            category: limit
+            for category, limit in zip(CATEGORY_ORDER, limits)
+            if limit is not None
+        },
+        "before_counts": dict(sorted(before_counts.items())),
+        "after_counts": dict(sorted(after_counts.items())),
+        "kept_examples": len(kept),
+        "dropped_examples": len(examples) - len(kept),
+    }
+
+
+def limit_examples_by_task_type(
+    examples: list[TrainingExample],
+    limits: list[int | None] | None,
+) -> tuple[list[TrainingExample], dict[str, object]]:
+    """タスクタイプごとの上限数に従って学習サンプルを切り詰める。"""
+    before_counts = Counter(
+        TASK_TYPE_BY_CATEGORY[example.category] for example in examples
+    )
+    if limits is None:
+        return examples, {
+            "enabled": False,
+            "task_type_order": list(TASK_TYPE_ORDER),
+            "limits": None,
+            "before_counts": dict(sorted(before_counts.items())),
+            "after_counts": dict(sorted(before_counts.items())),
+            "kept_examples": len(examples),
+            "dropped_examples": 0,
+        }
+
+    limit_by_task_type = dict(zip(TASK_TYPE_ORDER, limits))
+    seen: Counter[str] = Counter()
+    kept: list[TrainingExample] = []
+    for example in examples:
+        task_type = TASK_TYPE_BY_CATEGORY[example.category]
+        limit = limit_by_task_type.get(task_type)
+        if limit is None:
+            kept.append(example)
+            continue
+        if seen[task_type] < limit:
+            kept.append(example)
+            seen[task_type] += 1
+
+    if not kept:
+        raise ValueError(
+            "Task type limit filtering removed all training examples. "
+            f"limits={limits}"
+        )
+
+    after_counts = Counter(TASK_TYPE_BY_CATEGORY[example.category] for example in kept)
+    return kept, {
+        "enabled": True,
+        "task_type_order": list(TASK_TYPE_ORDER),
+        "limits": {
+            task_type: limit
+            for task_type, limit in zip(TASK_TYPE_ORDER, limits)
+            if limit is not None
+        },
+        "before_counts": dict(sorted(before_counts.items())),
+        "after_counts": dict(sorted(after_counts.items())),
+        "kept_examples": len(kept),
+        "dropped_examples": len(examples) - len(kept),
+    }
+
+
 async def main():
     cfg = _build_cfg()
 
@@ -178,6 +459,18 @@ async def main():
     entries = [e for e in entries if e["included"]]
     examples = [TrainingExample.from_dict(e) for e in entries]
     examples = filter_training_examples(examples)
+    examples, cot_prompt_filter_stats = filter_examples_by_cot_prompt(
+        examples,
+        mode=cfg.cot_prompt_filter_mode,
+    )
+    examples, task_type_limit_stats = limit_examples_by_task_type(
+        examples,
+        limits=cfg.task_type_limit_counts,
+    )
+    examples, category_limit_stats = limit_examples_by_category(
+        examples,
+        limits=cfg.category_limit_counts,
+    )
     total_masked = sum(e.masked_token_count for e in examples)
     total_unmasked = sum(e.unmasked_token_count for e in examples)
     logger.info(
@@ -185,6 +478,10 @@ async def main():
         f"{total_masked + total_unmasked:,} tokens "
         f"(unmasked={total_unmasked:,}, masked={total_masked:,})"
     )
+    logger.info(f"CoT prompt filter: {cot_prompt_filter_stats}")
+    logger.info(f"Task type limit filter: {task_type_limit_stats}")
+    logger.info(f"Category limit filter: {category_limit_stats}")
+    logger.info(f"Batch stratification: {cfg.batch_stratify_by}")
 
     n_batches = math.ceil(len(examples) / cfg.batch_size)
     total_steps = n_batches * cfg.num_epochs
@@ -215,6 +512,10 @@ async def main():
         "total_masked_tokens": total_masked,
         "total_unmasked_tokens": total_unmasked,
         "total_steps": total_steps,
+        "batch_stratify_by": cfg.batch_stratify_by,
+        "cot_prompt_filter": cot_prompt_filter_stats,
+        "task_type_limit_filter": task_type_limit_stats,
+        "category_limit_filter": category_limit_stats,
     }
     with open(log_path / "config.json", "w") as f:
         json.dump(config, f, indent=2)
@@ -248,7 +549,12 @@ async def main():
             epoch_start = time.time()
 
             rng = random.Random(epoch)
-            batches = _stratified_batches(examples, cfg.batch_size, rng)
+            batches = _stratified_batches(
+                examples,
+                cfg.batch_size,
+                rng,
+                stratify_by=cfg.batch_stratify_by,
+            )
 
             print(f"Batch sizes: {Counter(len(batch) for batch in batches)}")
 

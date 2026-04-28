@@ -19,6 +19,39 @@ from scripts.train.loss_config import (
 
 logger = logging.getLogger(__name__)
 
+CATEGORY_ORDER = (
+    "bit_manipulation",
+    "cipher",
+    "cryptarithm_deduce",
+    "cryptarithm_guess",
+    "equation_numeric_deduce",
+    "equation_numeric_guess",
+    "gravity",
+    "numeral",
+    "unit_conversion",
+)
+
+TASK_TYPE_ORDER = (
+    "gravity",
+    "numeral",
+    "unit_conversion",
+    "cipher",
+    "bit_manipulation",
+    "equation_transformation",
+)
+
+TASK_TYPE_BY_CATEGORY = {
+    "gravity": "gravity",
+    "numeral": "numeral",
+    "unit_conversion": "unit_conversion",
+    "cipher": "cipher",
+    "bit_manipulation": "bit_manipulation",
+    "cryptarithm_deduce": "equation_transformation",
+    "cryptarithm_guess": "equation_transformation",
+    "equation_numeric_deduce": "equation_transformation",
+    "equation_numeric_guess": "equation_transformation",
+}
+
 Category = Literal[
     "bit_manipulation",
     "cipher",
