@@ -18,10 +18,10 @@ from datetime import datetime
 
 import tinker
 from dotenv import load_dotenv
-from scripts.trainer.config import Cfg, IndexRecord, LogprobRecord
 
 from scripts.basic.const import SFT_DIR
 from scripts.train.base import TrainingExample, build_datum, load_corpus_entries
+from scripts.train.config import Cfg, IndexRecord, LogprobRecord
 from scripts.train.loss_config import (
     LossConfig,
 )
@@ -164,7 +164,7 @@ def compute_epoch_metrics(
 
 def filter_training_examples(examples: list[TrainingExample]) -> list[TrainingExample]:
     """必要に応じてカテゴリで絞り込む。"""
-    return examples[:10]
+    return examples
 
 
 async def main():

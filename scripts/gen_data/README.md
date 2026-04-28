@@ -39,3 +39,21 @@
    - `corpus/<id>/synthetic.jsonl` にセグメントを書き出す
 4. `augmentations/*.txt`（`[category]`/`[prompt]`/`[completion]` 形式の拡張データ）が存在すれば同様に処理する
 5. 全エントリーのメタデータを `corpus.jsonl` にインデックスとして書き出し、カテゴリ別の統計を表示する
+
+注意点:
+
+`gen_corpus.py` は全 9,500 問題を無条件に学習データ化するのではなく、
+`data/reasoning/<id>.txt` が存在する問題だけを対象にする。そのため、
+`gen_reasoning.py` で推論テキストを生成できなかった `rule_unknown` 問題は
+`corpus.jsonl` には入らず、件数が 9,500 より少なくなることがある。
+
+例えば、`data/problems.jsonl` が 9,500 件でも `data/reasoning/*.txt` が
+9,467 件なら、`gen_corpus.py` の出力も基本的に 9,467 entries になる。
+これは token length による追加フィルタというより、reasoning file の有無による
+入力データの絞り込みである。
+
+一方、推論用には別に `data/corpus_infer/` と `data/corpus_infer.jsonl` を作る。
+こちらは completion/reasoning を含まず、`train.csv` の prompt をチャットテンプレートで
+tokenize した prompt token だけを保存する。`reasoning/*.txt` の有無に依存しないため、
+通常は全 9,500 問題が入る。`scripts/infer/infer.py` は学習用 `corpus/` ではなく、
+この `corpus_infer/` を読んで推論する。

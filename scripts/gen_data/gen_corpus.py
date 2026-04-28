@@ -11,6 +11,8 @@
 - corpus_token_counts.csv                 - エントリーごとの token count 明細
 - corpus_unmasked_token_stats.json        - カテゴリ別 unmasked token count 集計
 - corpus/<problem_id>/synthetic.jsonl     - マスク済み/非マスクを交互に並べたセグメントファイル
+- corpus_infer.jsonl                      - 推論用 prompt token の全問題インデックス
+- corpus_infer/<problem_id>/prompt.jsonl  - 推論用 prompt token
 
 使い方:
     uv run corpus.py
@@ -32,6 +34,8 @@ from scripts.basic.common import load_jsonl
 from scripts.basic.const import (
     AUGMENTATIONS_DIR,
     CORPUS_DIR,
+    CORPUS_INFER_DIR,
+    CORPUS_INFER_INDEX,
     CORPUS_INDEX,
     PROBLEMS_INDEX,
     PROMPT_SUFFIX,
@@ -97,6 +101,29 @@ class CorpusEntry:
             "token_count": self.token_count,
             "answer": self.answer,
             "included": self.included,
+        }
+
+
+@dataclass
+class CorpusInferEntry:
+    problem_id: str
+    category: str
+    tokens: list[int]
+    answer: str
+
+    @property
+    def token_count(self) -> int:
+        return len(self.tokens)
+
+    def to_index_dict(self) -> dict:
+        return {
+            "problem_id": self.problem_id,
+            "segment": "prompt.jsonl",
+            "category": self.category,
+            "prompt_token_count": self.token_count,
+            "token_count": self.token_count,
+            "answer": self.answer,
+            "included": True,
         }
 
 
@@ -221,6 +248,51 @@ def _write_token_count_outputs(entries: list[CorpusEntry]) -> dict:
     return stats
 
 
+def _write_corpus_infer(
+    *,
+    prompts: dict[str, str],
+    answers: dict[str, str],
+    problem_cats: dict[str, str],
+    chat_tokenizer: AutoTokenizer,
+) -> list[CorpusInferEntry]:
+    """全問題の推論用 prompt token corpus を書き出す。"""
+    missing_prompts = sorted(set(problem_cats) - set(prompts))
+    if missing_prompts:
+        preview = ", ".join(missing_prompts[:10])
+        raise ValueError(
+            "corpus_infer requires prompts for all problems; "
+            f"missing {len(missing_prompts)} prompt(s): {preview}"
+        )
+
+    if CORPUS_INFER_DIR.exists():
+        shutil.rmtree(CORPUS_INFER_DIR)
+    CORPUS_INFER_DIR.mkdir(parents=True)
+
+    entries: list[CorpusInferEntry] = []
+    for problem_id in tqdm(sorted(problem_cats), desc="corpus_infer"):
+        prompt_ids = tokenize_prompt(prompts[problem_id], chat_tokenizer)
+        if len(prompt_ids) > TOKEN_LIMIT:
+            prompt_ids = prompt_ids[:TOKEN_LIMIT]
+        entry = CorpusInferEntry(
+            problem_id=problem_id,
+            category=problem_cats[problem_id],
+            tokens=prompt_ids,
+            answer=answers.get(problem_id, ""),
+        )
+        problem_dir = CORPUS_INFER_DIR / problem_id
+        problem_dir.mkdir(parents=True, exist_ok=True)
+        with (problem_dir / "prompt.jsonl").open("w") as f:
+            json.dump({"type": "prompt", "pos": 0, "tokens": prompt_ids}, f)
+            f.write("\n")
+        entries.append(entry)
+
+    with CORPUS_INFER_INDEX.open("w") as f:
+        for entry in entries:
+            json.dump(entry.to_index_dict(), f)
+            f.write("\n")
+    return entries
+
+
 def main() -> None:
     if not PROBLEMS_INDEX.exists():
         print(f"No {PROBLEMS_INDEX} found. Run problems.py first.")
@@ -251,6 +323,13 @@ def main() -> None:
     if CORPUS_DIR.exists():
         shutil.rmtree(CORPUS_DIR)
     CORPUS_DIR.mkdir(parents=True)
+
+    infer_entries = _write_corpus_infer(
+        prompts=prompts,
+        answers=answers,
+        problem_cats=problem_cats,
+        chat_tokenizer=chat_tokenizer,
+    )
 
     entries: list[CorpusEntry] = []
 
@@ -394,6 +473,7 @@ def main() -> None:
     max_prompt_tokens = max((e.prompt_token_count for e in entries), default=0)
 
     print(f"Corpus (synthetic): {len(entries)} entries")
+    print(f"Corpus infer:       {len(infer_entries)} entries")
     print(f"Unmasked tokens: {total_unmasked:,}")
     print(f"Masked tokens:   {total_masked:,}")
     print(f"Prompt tokens:   {total_prompt:,}")
