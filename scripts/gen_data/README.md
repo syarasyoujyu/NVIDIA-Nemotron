@@ -9,6 +9,54 @@
 2.problems.jsonlから問題データを取得
 3.generations.jsonl(モデルによる推論結果)をもとに問題とその出力結果をcsvにまとめる
 
+## gen_raw_data.py
+カテゴリ付きの raw/pattern データを 1 から生成する。
+
+カテゴリ判定と examples/question の抽出は `scripts/gen_data/types/` に分割し、
+`scripts/cot_prompt/` の `Problem` が使うカテゴリ名・構造に合わせる。
+そのため、数値方程式は `numeric_equation_*` ではなく
+`equation_numeric_deduce` / `equation_numeric_guess` として保存する。
+
+デフォルトは `--mode generate` で、既存の `data/train.csv` / `data/test.csv` には依存しない。
+各カテゴリの問題生成ロジックは `scripts/gen_data/types/*.py` に置く。
+既存CSVを分類・raw化したい場合だけ `--mode parse` を使う。
+
+生成時の制約:
+
+1. `numeral`: example/question に出す数値は 1〜150
+2. `cipher`: example/question の input 文字列はそれぞれ30文字以下
+3. `cryptarithm_deduce` / `cryptarithm_guess`: example は4〜6個、example側の演算子種類は1〜3個
+4. `unit_conversion`: 単位は `m` のみ
+5. `equation_numeric_deduce` / `equation_numeric_guess`: example は4〜6個、example側の演算子種類は1〜3個
+
+生成後は `scripts/cot_prompt` のカテゴリ別推論生成器を実行し、
+生成した `answer` と `\boxed{}` から抽出した submission が一致するかを確認する。
+`--mode generate` ではデフォルトで CoT が正解できたレコードだけを採用し、
+`raw_summary.json` に `cot_verification` として件数・カテゴリ別結果・不一致例を保存する。
+不一致があったときに終了コードも失敗にしたい場合は `--fail-on-cot-mismatch`
+または `make raw-data RAW_FAIL_ON_COT_MISMATCH=1` を使う。
+
+出力:
+
+1. `data/generated/patterns/train_pattern.csv`: `id,prompt,answer,category`
+2. `data/generated/patterns/test_pattern.csv`: `id,prompt,category`
+3. `data/generated/patterns/train_raw.jsonl`: `id,category,prompt,answer,examples,question`
+4. `data/generated/patterns/test_raw.jsonl`: `id,category,prompt,examples,question`
+5. `data/generated/patterns/raw_summary.json`: カテゴリ別件数と unmatched 情報
+
+使い方:
+
+```bash
+uv run python3 scripts/gen_data/gen_raw_data.py
+```
+
+件数を変える場合:
+
+```bash
+python3 scripts/gen_data/gen_raw_data.py \
+  --train-counts bit_manipulation=100,cipher=100,equation_numeric_deduce=50
+```
+
 ## gen_problems.py
 `train.csv` のプロンプトを解析してカテゴリ・例示・質問を抽出し、`data/problem/<id>.json` と `data/problems.jsonl` を生成する。
 
