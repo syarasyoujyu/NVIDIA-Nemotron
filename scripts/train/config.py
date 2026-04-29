@@ -54,6 +54,9 @@ class Cfg:
     adam_config: AdamConfig = dataclasses.field(default_factory=AdamConfig)
     backend: Literal["tinker", "modal"] = "tinker"
     micro_batch_size: int | None = 16  # tinker では None（サーバー側で決定）、modal では整数
+    from_pretrained: bool = False
+    pretrained_path: str | None = None
+    pretrained_load_optimizer: bool = True
     cot_prompt_filter_mode: Literal["all", "incorrect", "correct"] = "all"
     batch_stratify_by: Literal["category", "task_type"] = "task_type"
     category_limit_counts: list[int | None] | None = None

@@ -109,6 +109,26 @@ class TrainingClient:
         )
         return Future(_OptimResult(metrics=raw))
 
+    async def load_state_async(
+        self,
+        path: str,
+        *,
+        with_optimizer: bool = True,
+    ) -> None:
+        if self._backend != "tinker":
+            raise NotImplementedError(
+                "Loading pretrained state is only supported by tinker"
+            )
+
+        assert self._tinker_client is not None
+        if with_optimizer:
+            future = await self._tinker_client.load_state_with_optimizer_async(  # type: ignore[attr-defined]
+                path
+            )
+        else:
+            future = await self._tinker_client.load_state_async(path)  # type: ignore[attr-defined]
+        await future.result_async()
+
     async def save_checkpoint_async(self, name: str, log_path: str) -> None:
         if self._backend == "tinker":
             from tinker_cookbook import checkpoint_utils

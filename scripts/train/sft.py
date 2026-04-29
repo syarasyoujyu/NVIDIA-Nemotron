@@ -107,6 +107,26 @@ def _build_cfg() -> Cfg:
     p.add_argument("--backend", choices=["tinker", "modal"])
     p.add_argument("--micro_batch_size", type=int)
     p.add_argument("--learning_rate", type=float)
+    p.add_argument(
+        "--from_pretrained",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Load a saved Tinker training state before starting SFT.",
+    )
+    p.add_argument(
+        "--pretrained_path",
+        type=str,
+        help="Tinker state checkpoint path used when --from_pretrained is enabled.",
+    )
+    p.add_argument(
+        "--pretrained_load_optimizer",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Restore optimizer state with the weights. "
+            "Use --no-pretrained_load_optimizer to load weights only."
+        ),
+    )
     p.add_argument("--train_mlp", action=argparse.BooleanOptionalAction, default=None)
     p.add_argument("--train_attn", action=argparse.BooleanOptionalAction, default=None)
     p.add_argument("--train_unembed", action=argparse.BooleanOptionalAction, default=None)
@@ -155,6 +175,7 @@ def _build_cfg() -> Cfg:
     for field in [
         "num_epochs", "batch_size", "lora_rank", "max_length",
         "log_path", "backend", "micro_batch_size",
+        "from_pretrained", "pretrained_path", "pretrained_load_optimizer",
         "train_mlp", "train_attn", "train_unembed",
         "cot_prompt_filter_mode", "batch_stratify_by",
         "category_limit_counts", "task_type_limit_counts",
@@ -168,6 +189,10 @@ def _build_cfg() -> Cfg:
         cfg.adam_config.grad_clip_norm = args.grad_clip_norm
     if args.weight_decay is not None:
         cfg.adam_config.weight_decay = args.weight_decay
+    if cfg.from_pretrained and not cfg.pretrained_path:
+        p.error("--pretrained_path is required when --from_pretrained is enabled")
+    if not cfg.from_pretrained and cfg.pretrained_path:
+        p.error("--pretrained_path can only be used with --from_pretrained")
     return cfg
 
 
@@ -501,6 +526,19 @@ async def main():
         train_attn=cfg.train_attn,
         train_unembed=cfg.train_unembed,
     )
+    if cfg.from_pretrained:
+        assert cfg.pretrained_path is not None
+        optimizer_msg = (
+            "with optimizer state" if cfg.pretrained_load_optimizer else "weights only"
+        )
+        logger.info(
+            f"Loading pretrained training state from {cfg.pretrained_path} "
+            f"({optimizer_msg})"
+        )
+        await training_client.load_state_async(
+            cfg.pretrained_path,
+            with_optimizer=cfg.pretrained_load_optimizer,
+        )
 
     logprob_dir.mkdir(parents=True, exist_ok=True)
 

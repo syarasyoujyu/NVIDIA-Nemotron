@@ -1,4 +1,4 @@
-.PHONY: help raw-data patterns patterns-split patterns-reports infer-result infer-vllm-result
+.PHONY: help raw-data patterns patterns-split patterns-reports train-model train-model-from-pretrained train-model-modal infer-result infer-vllm-result
 
 UV := uv run python3
 UV_MODAL_RUN := uv run modal run
@@ -17,10 +17,12 @@ RAW_DATA_ARGS ?= --mode $(RAW_DATA_MODE) --seed $(RAW_DATA_SEED) --output-dir $(
 # task type order:
 # gravity,numeral,unit_conversion,cipher,bit_manipulation,equation_transformation
 TASK_TYPE_LIMIT_COUNTS ?=
-CATEGORY_LIMIT_COUNTS ?= [600,700,800,0,800,0,400,300,700]
+CATEGORY_LIMIT_COUNTS ?= [400,400,800,0,800,0,200,150,350]
 TRAIN_COT_PROMPT_FILTER_MODE ?= correct
 TRAIN_BATCH_STRATIFY_BY ?= task_type
-TRAIN_ARGS ?= --num_epochs 2 --batch_size 16 --learning_rate 0.0002 --cot_prompt_filter_mode $(TRAIN_COT_PROMPT_FILTER_MODE) --batch_stratify_by $(TRAIN_BATCH_STRATIFY_BY) $(if $(TASK_TYPE_LIMIT_COUNTS),--task_type_limit_counts "$(TASK_TYPE_LIMIT_COUNTS)",) $(if $(CATEGORY_LIMIT_COUNTS),--category_limit_counts "$(CATEGORY_LIMIT_COUNTS)",)
+TRAIN_ARGS ?= --num_epochs 2 --batch_size 16 --learning_rate 0.00002 --cot_prompt_filter_mode $(TRAIN_COT_PROMPT_FILTER_MODE) --batch_stratify_by $(TRAIN_BATCH_STRATIFY_BY) $(if $(TASK_TYPE_LIMIT_COUNTS),--task_type_limit_counts "$(TASK_TYPE_LIMIT_COUNTS)",) $(if $(CATEGORY_LIMIT_COUNTS),--category_limit_counts "$(CATEGORY_LIMIT_COUNTS)",)
+MODEL_CHECKPOINT ?=tinker://18bf66f8-fe3b-5aed-9871-4e8e42e8c2da:train:0/weights/final
+TRAIN_FROM_PRETRAINED_ARGS ?= $(TRAIN_ARGS) --from_pretrained --pretrained_path "$(MODEL_CHECKPOINT)"
 INFER_RUN ?= 04-28-08-23
 INFER_ARGS ?= --run $(INFER_RUN)
 VLLM_INFER_MODEL_PATH ?= nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
@@ -35,6 +37,8 @@ help:
 	@echo "  make patterns         # split -> reports+unmatched を一気に実行"
 	@echo "  make patterns-split   # data/train.csv を data/patterns に分割"
 	@echo "  make patterns-reports # data/patterns から report と unmatched を生成"
+	@echo "  make train-model      # Tinker SFT 学習を実行"
+	@echo "  make train-model-from-pretrained MODEL_CHECKPOINT='tinker://.../weights/final'"
 	@echo "  make infer-result     # Tinker 推論を実行し、評価結果も保存"
 	@echo "  make infer-vllm-result # vLLM 推論を実行し、評価結果も保存"
 
@@ -60,6 +64,9 @@ extend-data-from-results:
 
 train-model:
 	$(UV) scripts/train/sft.py $(TRAIN_ARGS)
+train-model-from-pretrained:
+	@test -n "$(MODEL_CHECKPOINT)" || (echo "MODEL_CHECKPOINT is required. Example: make train-model-from-pretrained MODEL_CHECKPOINT='tinker://.../weights/final'" >&2; exit 1)
+	$(UV) scripts/train/sft.py $(TRAIN_FROM_PRETRAINED_ARGS)
 train-model-modal:
 	$(UV_MODAL_DEPLOY) scripts/train/sft.py $(TRAIN_ARGS)
 
