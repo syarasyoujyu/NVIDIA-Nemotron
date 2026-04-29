@@ -61,6 +61,8 @@ class Cfg:
     batch_stratify_by: Literal["category", "task_type"] = "task_type"
     category_limit_counts: list[int | None] | None = None
     task_type_limit_counts: list[int | None] | None = None
+    task_type_limit_strategy: Literal["head", "random"] = "head"
+    task_type_limit_seed: int = 0
 
 
 @dataclasses.dataclass

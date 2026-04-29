@@ -169,6 +169,20 @@ def _build_cfg() -> Cfg:
             f"Order: {', '.join(TASK_TYPE_ORDER)}"
         ),
     )
+    p.add_argument(
+        "--task_type_limit_strategy",
+        choices=["head", "random"],
+        help=(
+            "How to choose examples when --task_type_limit_counts is set. "
+            "head keeps the first 0,1,2,... examples in corpus order; "
+            "random samples examples per task type."
+        ),
+    )
+    p.add_argument(
+        "--task_type_limit_seed",
+        type=int,
+        help="Random seed used when --task_type_limit_strategy=random.",
+    )
     args = p.parse_args()
 
     cfg = Cfg()
@@ -179,6 +193,7 @@ def _build_cfg() -> Cfg:
         "train_mlp", "train_attn", "train_unembed",
         "cot_prompt_filter_mode", "batch_stratify_by",
         "category_limit_counts", "task_type_limit_counts",
+        "task_type_limit_strategy", "task_type_limit_seed",
     ]:
         val = getattr(args, field)
         if val is not None:
@@ -422,6 +437,9 @@ def limit_examples_by_category(
 def limit_examples_by_task_type(
     examples: list[TrainingExample],
     limits: list[int | None] | None,
+    *,
+    strategy: str,
+    seed: int,
 ) -> tuple[list[TrainingExample], dict[str, object]]:
     """タスクタイプごとの上限数に従って学習サンプルを切り詰める。"""
     before_counts = Counter(
@@ -432,6 +450,8 @@ def limit_examples_by_task_type(
             "enabled": False,
             "task_type_order": list(TASK_TYPE_ORDER),
             "limits": None,
+            "strategy": strategy,
+            "seed": seed if strategy == "random" else None,
             "before_counts": dict(sorted(before_counts.items())),
             "after_counts": dict(sorted(before_counts.items())),
             "kept_examples": len(examples),
@@ -439,17 +459,36 @@ def limit_examples_by_task_type(
         }
 
     limit_by_task_type = dict(zip(TASK_TYPE_ORDER, limits))
-    seen: Counter[str] = Counter()
-    kept: list[TrainingExample] = []
-    for example in examples:
-        task_type = TASK_TYPE_BY_CATEGORY[example.category]
-        limit = limit_by_task_type.get(task_type)
-        if limit is None:
-            kept.append(example)
-            continue
-        if seen[task_type] < limit:
-            kept.append(example)
-            seen[task_type] += 1
+    if strategy == "head":
+        seen: Counter[str] = Counter()
+        kept: list[TrainingExample] = []
+        for example in examples:
+            task_type = TASK_TYPE_BY_CATEGORY[example.category]
+            limit = limit_by_task_type.get(task_type)
+            if limit is None:
+                kept.append(example)
+                continue
+            if seen[task_type] < limit:
+                kept.append(example)
+                seen[task_type] += 1
+    elif strategy == "random":
+        rng = random.Random(seed)
+        indices_by_task_type: dict[str, list[int]] = {}
+        for i, example in enumerate(examples):
+            task_type = TASK_TYPE_BY_CATEGORY[example.category]
+            indices_by_task_type.setdefault(task_type, []).append(i)
+
+        selected_indices: set[int] = set()
+        for task_type, indices in indices_by_task_type.items():
+            limit = limit_by_task_type.get(task_type)
+            if limit is None or limit >= len(indices):
+                selected_indices.update(indices)
+            elif limit > 0:
+                selected_indices.update(rng.sample(indices, limit))
+
+        kept = [example for i, example in enumerate(examples) if i in selected_indices]
+    else:
+        raise ValueError(f"Unknown task_type_limit_strategy: {strategy}")
 
     if not kept:
         raise ValueError(
@@ -466,6 +505,8 @@ def limit_examples_by_task_type(
             for task_type, limit in zip(TASK_TYPE_ORDER, limits)
             if limit is not None
         },
+        "strategy": strategy,
+        "seed": seed if strategy == "random" else None,
         "before_counts": dict(sorted(before_counts.items())),
         "after_counts": dict(sorted(after_counts.items())),
         "kept_examples": len(kept),
@@ -491,6 +532,8 @@ async def main():
     examples, task_type_limit_stats = limit_examples_by_task_type(
         examples,
         limits=cfg.task_type_limit_counts,
+        strategy=cfg.task_type_limit_strategy,
+        seed=cfg.task_type_limit_seed,
     )
     examples, category_limit_stats = limit_examples_by_category(
         examples,
