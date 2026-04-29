@@ -39,9 +39,9 @@
 出力:
 
 1. `data/generated/patterns/train_pattern.csv`: `id,prompt,answer,category`
-2. `data/generated/patterns/test_pattern.csv`: `id,prompt,category`
+2. `data/generated/patterns/test_pattern.csv`: `id,prompt,answer,category`
 3. `data/generated/patterns/train_raw.jsonl`: `id,category,prompt,answer,examples,question`
-4. `data/generated/patterns/test_raw.jsonl`: `id,category,prompt,examples,question`
+4. `data/generated/patterns/test_raw.jsonl`: `id,category,prompt,answer,examples,question`
 5. `data/generated/patterns/raw_summary.json`: カテゴリ別件数と unmatched 情報
 
 使い方:

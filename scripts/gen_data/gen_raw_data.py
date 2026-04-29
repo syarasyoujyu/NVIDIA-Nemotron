@@ -486,7 +486,7 @@ def main() -> None:
                 test_pattern,
                 test_raw,
                 counts=test_counts,
-                include_answer=False,
+                include_answer=True,
                 seed=args.seed + 1,
                 verify_cot=args.verify_cot,
                 require_cot_correct=args.require_cot_correct,
