@@ -1,6 +1,8 @@
+import os
 from pathlib import Path
 
-TRAIN_CSV = Path("data/train.csv")
+TRAIN_CSV = Path(os.environ.get("TRAIN_CSV", "data/train.csv"))
+TEST_CSV = Path(os.environ.get("TEST_CSV", "data/test.csv"))
 AUGMENTATIONS_DIR = Path("data/augmentations")
 PROBLEMS_INDEX = Path("data/problems.jsonl")
 PROBLEM_DIR = Path("data/problem")

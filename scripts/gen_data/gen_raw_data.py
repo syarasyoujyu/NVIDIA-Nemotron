@@ -1,6 +1,8 @@
 """Build categorized raw datasets for pattern inspection and CoT generation.
 
 Outputs:
+  - data/generated/train.csv: generated or parsed train rows usable by gen_problems.py
+  - data/generated/test.csv: generated or parsed test rows usable as a test CSV
   - data/generated/patterns/train_pattern.csv: generated or parsed train rows plus category
   - data/generated/patterns/test_pattern.csv: generated or parsed test rows plus category
   - data/generated/patterns/train_raw.jsonl: parsed examples/question payloads for CoT tools
@@ -26,12 +28,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.basic.const import TRAIN_CSV
+from scripts.basic.const import TEST_CSV, TRAIN_CSV
 from scripts.basic.types import GENERATORS
 from scripts.cot_prompt.store_types import Problem
 from scripts.gen_data.types import RawProblemRecord, build_record, generate_record
 
-DEFAULT_TEST_CSV = Path("data/test.csv")
 DEFAULT_OUTPUT_DIR = Path("data/generated/patterns")
 CATEGORY_ORDER = (
     "bit_manipulation",
@@ -288,6 +289,25 @@ def _write_raw_jsonl(
             f.write("\n")
 
 
+def _write_dataset_csv(
+    path: Path,
+    records: list[RawProblemRecord],
+    include_answer: bool,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["id", "prompt"]
+    if include_answer:
+        fieldnames.append("answer")
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in records:
+            row = {"id": record.id, "prompt": record.prompt}
+            if include_answer:
+                row["answer"] = record.answer
+            writer.writerow(row)
+
+
 def _build_records(
     rows: list[dict[str, str]],
 ) -> tuple[list[RawProblemRecord], list[dict[str, str]]]:
@@ -331,6 +351,7 @@ def _summarize(
 
 def build_dataset(
     source_path: Path,
+    dataset_path: Path,
     pattern_path: Path,
     raw_path: Path,
     include_answer: bool,
@@ -338,6 +359,7 @@ def build_dataset(
 ) -> dict[str, object]:
     source_fieldnames, rows = _read_source_csv(source_path)
     records, unmatched = _build_records(rows)
+    _write_dataset_csv(dataset_path, records, include_answer=include_answer)
     _write_pattern_csv(
         pattern_path,
         records,
@@ -351,6 +373,7 @@ def build_dataset(
 
 def build_generated_dataset(
     source_name: str,
+    dataset_path: Path,
     pattern_path: Path,
     raw_path: Path,
     counts: dict[str, int],
@@ -386,6 +409,7 @@ def build_generated_dataset(
     rng.shuffle(records)
 
     source_fieldnames = ["id", "prompt", "answer"] if include_answer else ["id", "prompt"]
+    _write_dataset_csv(dataset_path, records, include_answer=include_answer)
     _write_pattern_csv(
         pattern_path,
         records,
@@ -422,8 +446,10 @@ def parse_args() -> argparse.Namespace:
         help="Generated test counts. Defaults to bit_manipulation=2,cipher=1.",
     )
     parser.add_argument("--train-input", type=Path, default=TRAIN_CSV)
-    parser.add_argument("--test-input", type=Path, default=DEFAULT_TEST_CSV)
+    parser.add_argument("--test-input", type=Path, default=TEST_CSV)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--train-csv-output", type=Path, default=None)
+    parser.add_argument("--test-csv-output", type=Path, default=None)
     parser.add_argument("--train-pattern-output", type=Path, default=None)
     parser.add_argument("--test-pattern-output", type=Path, default=None)
     parser.add_argument("--train-raw-output", type=Path, default=None)
@@ -465,6 +491,8 @@ def main() -> None:
     train_raw = args.train_raw_output or output_dir / "train_raw.jsonl"
     test_raw = args.test_raw_output or output_dir / "test_raw.jsonl"
     summary_output = args.summary_output or output_dir / "raw_summary.json"
+    train_csv = args.train_csv_output or output_dir.parent / "train.csv"
+    test_csv = args.test_csv_output or output_dir.parent / "test.csv"
 
     if args.mode == "generate":
         train_counts = _parse_counts(args.train_counts, DEFAULT_TRAIN_COUNTS)
@@ -472,6 +500,7 @@ def main() -> None:
         summaries = [
             build_generated_dataset(
                 "generated:train",
+                train_csv,
                 train_pattern,
                 train_raw,
                 counts=train_counts,
@@ -483,6 +512,7 @@ def main() -> None:
             ),
             build_generated_dataset(
                 "generated:test",
+                test_csv,
                 test_pattern,
                 test_raw,
                 counts=test_counts,
@@ -497,6 +527,7 @@ def main() -> None:
         summaries = [
             build_dataset(
                 args.train_input,
+                train_csv,
                 train_pattern,
                 train_raw,
                 include_answer=True,
@@ -504,6 +535,7 @@ def main() -> None:
             ),
             build_dataset(
                 args.test_input,
+                test_csv,
                 test_pattern,
                 test_raw,
                 include_answer=False,
