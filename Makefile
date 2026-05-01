@@ -53,17 +53,17 @@ help:
 	@echo "  make infer-vllm-result # vLLM 推論を実行し、評価結果も保存"
 
 raw-data:
-	python3 scripts/gen_data/gen_raw_data.py $(RAW_DATA_ARGS)
+	$(UV) scripts/gen_data/gen_raw_data.py $(RAW_DATA_ARGS)
 
 gen-raw-data: raw-data
 
 patterns: patterns-split patterns-reports
 
 patterns-split:
-	python3 scripts/extraction/split_train_by_pattern.py --output-dir $(PATTERN_DIR) --legacy-split
+	$(UV) scripts/extraction/split_train_by_pattern.py --output-dir $(PATTERN_DIR) --legacy-split
 
 patterns-reports:
-	python3 scripts/extraction/generate_pattern_rule_reports.py --input-dir $(PATTERN_DIR) --output-dir $(PATTERN_DIR) --mode all
+	$(UV) scripts/extraction/generate_pattern_rule_reports.py --input-dir $(PATTERN_DIR) --output-dir $(PATTERN_DIR) --mode all
 
 extend-data-from-problems:
 	$(UV) scripts/gen_data/gen_problems.py
