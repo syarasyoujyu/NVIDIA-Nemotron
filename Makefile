@@ -6,7 +6,7 @@ UV_MODAL_RUN := uv run modal run
 UV_MODAL_DEPLOY:=uv run modal deploy
 PATTERN_DIR := data/patterns
 #GENERATED_RUN_DIRは、train時はshellコマンド用いた時刻計測で作成されたDIRではないものに変えた方が良い
-GENERATED_RUN_DIR ?= data/generated/2026-05-02-08-12
+GENERATED_RUN_DIR ?= data/generated/2026-05-02-11-00
 RAW_PATTERN_DIR := $(GENERATED_RUN_DIR)/patterns
 GENERATED_TRAIN_CSV := $(GENERATED_RUN_DIR)/train.csv
 GENERATED_TEST_CSV := $(GENERATED_RUN_DIR)/test.csv

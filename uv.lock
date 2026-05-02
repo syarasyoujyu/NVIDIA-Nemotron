@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -2783,6 +2783,7 @@ dependencies = [
     { name = "kagglehub" },
     { name = "marimo" },
     { name = "modal" },
+    { name = "pandas" },
     { name = "tinker" },
     { name = "tinker-cookbook" },
     { name = "tokenizers" },
@@ -2799,6 +2800,7 @@ requires-dist = [
     { name = "kagglehub", specifier = ">=1.0.0" },
     { name = "marimo", specifier = ">=0.23.2" },
     { name = "modal", specifier = ">=1.4.2" },
+    { name = "pandas", specifier = ">=3.0.2" },
     { name = "tinker", specifier = ">=0.18.2" },
     { name = "tinker-cookbook", specifier = ">=0.1.0" },
     { name = "tokenizers", specifier = ">=0.22.2" },

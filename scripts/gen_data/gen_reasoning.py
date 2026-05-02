@@ -17,10 +17,13 @@ import shutil
 import time
 from dataclasses import dataclass, field
 
+import pandas as pd
+
 from scripts.basic.const import (
     INVESTIGATIONS_DIR,
     PROBLEMS_INDEX,
     REASONING_DIR,
+    TRAIN_CSV,
 )
 from scripts.basic.types import GENERATORS, INVESTIGATION_CATEGORIES, SKIP_CATEGORIES
 from scripts.cot_prompt.store_types import Problem
@@ -79,6 +82,28 @@ class CategoryCounts:
     rule_found: int = 0
     total: int = 0
     runtimes: list[float] = field(default_factory=list)
+
+
+def write_reasoning_column_to_train_csv() -> int:
+    """TRAIN_CSV に reasoning/<id>.txt の内容を reasoning カラムとして書き戻す。"""
+    if not TRAIN_CSV.exists():
+        print(f"No {TRAIN_CSV} found; skipped writing reasoning column.")
+        return 0
+
+    df = pd.read_csv(TRAIN_CSV, dtype=str, keep_default_na=False)
+    if "id" not in df.columns:
+        print(f"No id column found in {TRAIN_CSV}; skipped writing reasoning column.")
+        return 0
+
+    reasoning_by_id = {
+        path.stem: path.read_text(encoding="utf-8")
+        for path in REASONING_DIR.glob("*.txt")
+    }
+    df["reasoning"] = df["id"].map(reasoning_by_id).fillna("")
+    updated = int(df["reasoning"].astype(bool).sum())
+    df.to_csv(TRAIN_CSV, index=False)
+
+    return updated
 
 
 def main() -> None:
@@ -182,10 +207,13 @@ def main() -> None:
             entry.pop("has_investigation", None)
             f.write(json.dumps(entry) + "\n")
 
+    train_reasoning_rows = write_reasoning_column_to_train_csv()
+
     # 精度統計を表示する
     total = sum(c.total for c in category_stats.values())
     rule_found = sum(c.rule_found for c in category_stats.values())
     print(f"\nGenerated {generated} reasoning files in {REASONING_DIR}/")
+    print(f"Updated reasoning column for {train_reasoning_rows} rows in {TRAIN_CSV}")
     if skipped:
         print(f"Skipped {skipped} (no generator for category)")
     if hypothesis_formed:
