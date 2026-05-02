@@ -1,6 +1,6 @@
 """Tinker のチェックポイントから LoRA アダプターを Kaggle にアップロードする。
 前提条件:
-    1. .env に KAGGLE_API_TOKEN と TINKER_API_KEY が設定されていること
+    1. .env に KAGGLE_API_TOKEN, TINKER_API_KEY, MODAL_TOKEN_ID, MODAL_TOKEN_SECRET が設定されていること
     2. Tinker にトレーニング済みアダプターのチェックポイントが存在すること
 
 処理の流れ:
@@ -13,11 +13,19 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import tarfile
 import urllib.request
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    load_dotenv = None
+
+
+if load_dotenv is not None:
+    load_dotenv()
 
 import modal
 
@@ -25,6 +33,7 @@ kaggle_image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "kagglehub>=0.1.0",
     "tinker>=0.5.1",
     "pydantic>=2.0,<3.0",
+    "python-dotenv>=1.0.0",
 )
 
 adapter_vol = modal.Volume.from_name("adapter-weights", create_if_missing=True)
@@ -149,20 +158,35 @@ def _find_latest_adapter() -> str:
     return latest["tinker_path"]
 
 
-@app.local_entrypoint()
-def main():
-    """Tinker から最新のアダプターをダウンロードし、Kaggle へアップロードする。"""
-    from dotenv import load_dotenv
-    load_dotenv()
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise ValueError(f"{name} is required in .env or the environment")
+    return value
 
+
+def run_upload() -> None:
+    """Tinker から最新のアダプターをダウンロードし、Kaggle へアップロードする。"""
     tinker_model = _find_latest_adapter()
     print(f"Tinker model: {tinker_model}")
     print(f"Kaggle instance: {DEFAULT_INSTANCE}")
 
-    kaggle_api_token = os.environ["KAGGLE_API_TOKEN"]
-    tinker_env = {"TINKER_API_KEY": os.environ["TINKER_API_KEY"]}
+    kaggle_api_token = _require_env("KAGGLE_API_TOKEN")
+    tinker_env = {"TINKER_API_KEY": _require_env("TINKER_API_KEY")}
 
     download_adapter.remote(tinker_model, tinker_env)
 
     result = upload_to_kaggle.remote(kaggle_api_token)
     print(result)
+
+
+@app.local_entrypoint()
+def main():
+    """Entry point for `modal run` when Modal credentials are already exported."""
+    run_upload()
+
+
+if __name__ == "__main__":
+    with modal.enable_output():
+        with app.run():
+            run_upload()

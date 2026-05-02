@@ -22,6 +22,7 @@ import random
 import re
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,7 +34,9 @@ from scripts.basic.types import GENERATORS
 from scripts.cot_prompt.store_types import Problem
 from scripts.gen_data.types import RawProblemRecord, build_record, generate_record
 
-DEFAULT_OUTPUT_DIR = Path("data/generated/patterns")
+DEFAULT_OUTPUT_DIR = (
+    Path("data/generated") / datetime.now().strftime("%Y-%m-%d-%H-%M") / "patterns"
+)
 CATEGORY_ORDER = (
     "bit_manipulation",
     "cipher",

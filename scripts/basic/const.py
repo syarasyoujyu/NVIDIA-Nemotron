@@ -1,19 +1,21 @@
 import os
 from pathlib import Path
 
-TRAIN_CSV = Path(os.environ.get("TRAIN_CSV", "data/train.csv"))
-TEST_CSV = Path(os.environ.get("TEST_CSV", "data/test.csv"))
-AUGMENTATIONS_DIR = Path("data/augmentations")
-PROBLEMS_INDEX = Path("data/problems.jsonl")
-PROBLEM_DIR = Path("data/problem")
-REASONING_DIR = Path("data/reasoning")
-CORPUS_DIR = Path("data/corpus")
-CORPUS_INDEX = Path("data/corpus.jsonl")
-CORPUS_INFER_DIR = Path("data/corpus_infer")
-CORPUS_INFER_INDEX = Path("data/corpus_infer.jsonl")
-TOKENIZER_PATH = Path("data/tokenizer.json")
-INVESTIGATIONS_DIR = Path("data/investigations")
-SFT_DIR = Path("data/training/sft")
+DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
+
+TRAIN_CSV = Path(os.environ.get("TRAIN_CSV", DATA_DIR / "train.csv"))
+TEST_CSV = Path(os.environ.get("TEST_CSV", DATA_DIR / "test.csv"))
+AUGMENTATIONS_DIR = DATA_DIR / "augmentations"
+PROBLEMS_INDEX = DATA_DIR / "problems.jsonl"
+PROBLEM_DIR = DATA_DIR / "problem"
+REASONING_DIR = DATA_DIR / "reasoning"
+CORPUS_DIR = DATA_DIR / "corpus"
+CORPUS_INDEX = DATA_DIR / "corpus.jsonl"
+CORPUS_INFER_DIR = DATA_DIR / "corpus_infer"
+CORPUS_INFER_INDEX = DATA_DIR / "corpus_infer.jsonl"
+TOKENIZER_PATH = Path(os.environ.get("TOKENIZER_PATH", "data/tokenizer.json"))
+INVESTIGATIONS_DIR = DATA_DIR / "investigations"
+SFT_DIR = DATA_DIR / "training/sft"
 PROMPT_SUFFIX = (
     "\nPlease put your final answer inside `\\boxed{}`. "
     "For example: `\\boxed{your answer}`"

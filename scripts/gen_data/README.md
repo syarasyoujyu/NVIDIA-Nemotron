@@ -38,11 +38,15 @@
 
 出力:
 
-1. `data/generated/patterns/train_pattern.csv`: `id,prompt,answer,category`
-2. `data/generated/patterns/test_pattern.csv`: `id,prompt,answer,category`
-3. `data/generated/patterns/train_raw.jsonl`: `id,category,prompt,answer,examples,question`
-4. `data/generated/patterns/test_raw.jsonl`: `id,category,prompt,answer,examples,question`
-5. `data/generated/patterns/raw_summary.json`: カテゴリ別件数と unmatched 情報
+デフォルトでは `data/generated/YYYY-MM-DD-HH-MM/` の run ディレクトリに保存する。
+
+1. `data/generated/YYYY-MM-DD-HH-MM/train.csv`: 生成 train CSV
+2. `data/generated/YYYY-MM-DD-HH-MM/test.csv`: 生成 test CSV
+3. `data/generated/YYYY-MM-DD-HH-MM/patterns/train_pattern.csv`: `id,prompt,answer,category`
+4. `data/generated/YYYY-MM-DD-HH-MM/patterns/test_pattern.csv`: `id,prompt,answer,category`
+5. `data/generated/YYYY-MM-DD-HH-MM/patterns/train_raw.jsonl`: `id,category,prompt,answer,examples,question`
+6. `data/generated/YYYY-MM-DD-HH-MM/patterns/test_raw.jsonl`: `id,category,prompt,answer,examples,question`
+7. `data/generated/YYYY-MM-DD-HH-MM/patterns/raw_summary.json`: カテゴリ別件数と unmatched 情報
 
 使い方:
 
@@ -59,6 +63,7 @@ python3 scripts/gen_data/gen_raw_data.py \
 
 ## gen_problems.py
 `train.csv` のプロンプトを解析してカテゴリ・例示・質問を抽出し、`data/problem/<id>.json` と `data/problems.jsonl` を生成する。
+`DATA_DIR` を指定した場合は、そのディレクトリ配下に `problem/` と `problems.jsonl` を生成する。
 
 1. プロンプトの先頭行のキーワード（"bit manipulation" / "encryption" / "numeral system" 等）からカテゴリを判定する
 2. カテゴリごとのパーサーで例示ペア（input_value, output_value）と質問を抽出する
@@ -68,6 +73,7 @@ python3 scripts/gen_data/gen_raw_data.py \
 
 ## gen_reasoning.py
 `problems.jsonl` の各問題に対して決定的な推論テキストを生成し、`reasoning/<id>.txt` として保存する。
+`DATA_DIR` を指定した場合は、そのディレクトリ配下の `problems.jsonl` を読み書きし、`reasoning/` を生成する。
 
 1. `problems.jsonl` から問題リストを読み込む
 2. 各問題に対応するジェネレーター関数（`scripts/cot_prompt/` 以下）を実行して推論テキストを生成する
@@ -77,6 +83,7 @@ python3 scripts/gen_data/gen_raw_data.py \
 
 ## gen_corpus.py
 `reasoning/*.txt` の推論テキストをもとに、ファインチューニング用の合成学習コーパスを生成する。
+`DATA_DIR` を指定した場合は、そのディレクトリ配下の `train.csv` / `problems.jsonl` / `reasoning/` を読み、`corpus/` を生成する。
 
 1. トークナイザー（vocab ファイルおよびチャットテンプレート用）を読み込む
 2. `train.csv` から問題プロンプトと回答を、`problems.jsonl` からカテゴリを取得する
